@@ -50,30 +50,16 @@ def detectar_fundo(imagem):
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
 def detectar_regioes_anomalias(imagem, area_min_percent=0.5, n_sigmas=2.0):
-    """
-    Detecta regiões irradiadas como anomalias estatísticas
-    
-    n_sigmas: número de desvios padrão abaixo da média para considerar como irradiado
-                1.0 = mais sensível (detecta mais)
-                2.0 = padrão
-                3.0 = menos sensível (só escuras)
-    """
+    """Detecta regiões irradiadas como anomalias estatísticas"""
     gray = rgb2gray(imagem)
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    # Calcular estatísticas do filme (assumindo que a maioria é não irradiada)
     media = np.mean(gray)
     desvio = np.std(gray)
-    
-    # Threshold: média - n_sigmas * desvio
-    # Regiões irradiadas são MAIS ESCURAS (menor intensidade)
     limite = media - n_sigmas * desvio
     
-    # Detectar pixels abaixo do limite (mais escuros)
     binary = gray < limite
-    
-    # Limpeza morfológica
     binary = remove_small_objects(binary, min_size=int(area_minima))
     binary = remove_small_holes(binary, area_threshold=int(area_minima/2))
     binary = erosion(binary, disk(3))
@@ -146,13 +132,7 @@ with st.sidebar:
     st.header("⚙️ Configurações")
     dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
     area_min = st.slider("Área Mínima (%)", 0.01, 5.0, 0.5, 0.01, help="Regiões menores são ignoradas")
-    
-    n_sigmas = st.slider(
-        "Sensibilidade (σ)",
-        0.5, 4.0, 1.5, 0.1,
-        help="1.0 = detecta tudo | 2.0 = padrão | 3.0 = só escuras"
-    )
-    
+    n_sigmas = st.slider("Sensibilidade (σ)", 0.5, 4.0, 1.5, 0.1, help="1.0 = detecta tudo | 2.0 = padrão | 3.0 = só escuras")
     st.markdown("---")
     st.info("💡 Dica: Reduza σ se não detectar todas as regiões")
 
@@ -183,7 +163,7 @@ if arquivo:
             
             regioes, media, desvio, limite = detectar_regioes_anomalias(img_filme, area_min, n_sigmas)
             
-            st.info(f"📊 Estatísticas do filme: Média={media:.3f}, σ={desvio:.3f}, Limite={limite:.3f}")
+            st.info(f"📊 Estatísticas: Média={media:.3f}, σ={desvio:.3f}, Limite={limite:.3f}")
             
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada!")
@@ -203,21 +183,6 @@ if arquivo:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Regiões", len(regioes))
             c2.metric("DPI", dpi)
-            c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
-            c4.metric("Ordenação", "1=Claro → N=Escuro")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                csv = df.to_csv(index=False)
-                st.download_button("📥 Download CSV", csv, f"resultado_{arquivo.name.split('.')[0]}.csv", "text/csv", use_container_width=True)
-            with col_d2:
-                buf = io.BytesIO()
-                Image.fromarray(img_resultado).save(buf, format='PNG')
-                st.download_button("📥 Download Imagem", buf.getvalue(), f"analisado_{arquivo.name.split('.')[0]}.png", "image/png", use_container_width=True)
-else:
-    st.info("👆 Faça upload de uma imagem para começar!")
-i)
             c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
             c4.metric("Ordenação", "1=Claro → N=Escuro")
             st.dataframe(df, use_container_width=True, hide_index=True)

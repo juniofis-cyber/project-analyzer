@@ -1,5 +1,5 @@
 """
-Project Analyzer - Baseado no grain-analysis (adaptado com skimage)
+Project Analyzer - Multi-Otsu para detectar regiões irradiadas
 """
 
 import streamlit as st
@@ -9,117 +9,61 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu, gaussian
-from skimage.morphology import closing, square, remove_small_objects
-from skimage.measure import label, regionprops, find_contours
-from skimage.segmentation import clear_border
+from skimage.filters import threshold_multiotsu
+from skimage.morphology import remove_small_objects, closing, square
+from skimage.measure import label, regionprops
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
 st.title("🔬 Project Analyzer")
-st.markdown("Detecção de regiões irradiadas em filme EBT3")
 
-def detectar_fundo(imagem):
-    """Detecta e corta o filme da imagem"""
+def detectar_regioes(imagem, area_min):
+    """Detecta regiões irradiadas usando Multi-Otsu"""
     gray = rgb2gray(imagem)
     
-    # Otsu para separar fundo branco do filme
-    thresh = threshold_otsu(gray)
-    binary = gray < thresh
+    # Multi-Otsu com 3 classes: fundo | filme | irradiado
+    thresholds = threshold_multiotsu(gray, classes=3)
     
-    # Limpar bordas
-    binary = clear_border(binary)
+    # thresholds[0] = separa fundo do filme
+    # thresholds[1] = separa filme das regiões irradiadas
     
-    # Remover ruídos pequenos
-    binary = remove_small_objects(binary, min_size=1000)
+    # Pegar apenas as regiões irradiadas (mais escuras que thresholds[1])
+    binary = gray < thresholds[1]
     
-    # Labeling
-    labeled = label(binary)
-    regions = regionprops(labeled)
-    
-    if not regions:
-        return imagem, None
-    
-    # Pegar o maior contorno (o filme)
-    largest = max(regions, key=lambda r: r.area)
-    minr, minc, maxr, maxc = largest.bbox
-    
-    # Cortar com margem
-    margem = 20
-    h, w = imagem.shape[:2]
-    minr = max(0, minr - margem)
-    minc = max(0, minc - margem)
-    maxr = min(h, maxr + margem)
-    maxc = min(w, maxc + margem)
-    
-    return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
-
-def detectar_regioes(imagem, area_min_pixels):
-    """
-    Detecta regiões irradiadas usando técnica similar ao grain-analysis
-    mas com skimage
-    """
-    gray = rgb2gray(imagem)
-    
-    # Blur para reduzir ruído
-    blurred = gaussian(gray, sigma=2)
-    
-    # Threshold Otsu (inverso - detecta escuro)
-    thresh = threshold_otsu(blurred)
-    binary = blurred < thresh
-    
-    # Remover objetos pequenos
-    binary = remove_small_objects(binary, min_size=int(area_min_pixels))
-    
-    # Fechar buracos
+    # Limpeza
+    binary = remove_small_objects(binary, min_size=int(area_min))
     binary = closing(binary, square(5))
     
     # Labeling
     labeled = label(binary)
     regions = regionprops(labeled, intensity_image=gray)
     
-    # Processar regiões
     regioes = []
-    for region in regions:
-        if region.area < area_min_pixels:
-            continue
-        
-        minr, minc, maxr, maxc = region.bbox
-        w = maxc - minc
-        h = maxr - minr
-        
-        # Calcular intensidade média
-        intensidade = region.mean_intensity
-        
-        # Centro
-        cx = int(region.centroid[1])
-        cy = int(region.centroid[0])
-        
-        regioes.append({
-            'area': region.area,
-            'intensidade_media': intensidade,
-            'centro': (cx, cy),
-            'bbox': (minc, minr, w, h)
-        })
+    for r in regions:
+        if r.area >= area_min:
+            minr, minc, maxr, maxc = r.bbox
+            regioes.append({
+                'area': r.area,
+                'intensidade_media': r.mean_intensity,
+                'centro': (int(r.centroid[1]), int(r.centroid[0])),
+                'bbox': (minc, minr, maxc - minc, maxr - minr)
+            })
     
-    return regioes
+    return regioes, thresholds
 
-def ordenar_por_escurecimento(regioes):
-    """Ordena do mais claro (maior intensidade) para o mais escuro"""
+def ordenar(regioes):
     ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'], reverse=True)
     for i, r in enumerate(ordenadas, 1):
         r['id_ordenado'] = i
     return ordenadas
 
-def desenhar_resultado(imagem, regioes):
-    """Desenha contornos e numeração"""
-    # Converter para uint8
+def desenhar(imagem, regioes):
     if imagem.max() <= 1:
-        img_uint8 = (imagem * 255).astype(np.uint8)
+        img = (imagem * 255).astype(np.uint8)
     else:
-        img_uint8 = imagem.astype(np.uint8)
+        img = imagem.astype(np.uint8)
     
-    img_pil = Image.fromarray(img_uint8)
+    img_pil = Image.fromarray(img)
     draw = ImageDraw.Draw(img_pil)
     
     try:
@@ -129,34 +73,70 @@ def desenhar_resultado(imagem, regioes):
     
     for r in regioes:
         x, y, w, h = r['bbox']
-        
-        # Contorno verde
         draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=3)
-        
-        # Número no centro
         cx, cy = r['centro']
-        numero = str(r['id_ordenado'])
-        
-        # Fundo preto
-        bbox = draw.textbbox((0, 0), numero, font=fonte)
+        bbox = draw.textbbox((0, 0), str(r['id_ordenado']), font=fonte)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.rectangle([cx - tw//2 - 4, cy - th//2 - 4, 
-                       cx + tw//2 + 4, cy + th//2 + 4], fill=(0, 0, 0))
-        
-        # Texto branco
-        draw.text((cx - tw//2, cy - th//2), numero, fill=(255, 255, 255), font=fonte)
+        draw.rectangle([cx - tw//2 - 4, cy - th//2 - 4, cx + tw//2 + 4, cy + th//2 + 4], fill=(0, 0, 0))
+        draw.text((cx - tw//2, cy - th//2), str(r['id_ordenado']), fill=(255, 255, 255), font=fonte)
     
     return np.array(img_pil)
 
-def criar_dataframe(regioes, dpi):
-    """Cria DataFrame com dados"""
-    mm_por_pixel = 25.4 / dpi
-    dados = []
-    for r in regioes:
-        area_mm2 = r['area'] * (mm_por_pixel ** 2)
-        dados.append({
-            'Número': r['id_ordenado'],
-            'Área (mm²)': round(area_mm2, 2),
+# Interface
+with st.sidebar:
+    st.header("Configurações")
+    dpi = st.number_input("DPI", 1, 2400, 50)
+    area_min = st.slider("Área Mínima (pixels)", 100, 50000, 10000, 500)
+
+st.header("Upload da Imagem")
+arquivo = st.file_uploader("Imagem EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
+
+if arquivo:
+    img = Image.open(io.BytesIO(arquivo.read()))
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img_orig = np.array(img)
+    img_norm = img_orig / 255.0 if img_orig.max() > 1 else img_orig
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Original")
+        st.image(img_orig, use_column_width=True)
+    
+    if st.button("ANALISAR", type="primary"):
+        with st.spinner("Processando..."):
+            regioes, thresh = detectar_regioes(img_norm, area_min)
+            
+            st.info(f"Thresholds: {thresh[0]:.3f}, {thresh[1]:.3f}")
+            
+            if not regioes:
+                st.warning("Nenhuma região! Reduza Área Mínima")
+                st.stop()
+            
+            reg_ord = ordenar(regioes)
+            img_res = desenhar(img_norm, reg_ord)
+            
+            with col2:
+                st.subheader(f"{len(regioes)} regiões")
+                st.image(img_res, use_column_width=True)
+            
+            # Tabela
+            mm = 25.4 / dpi
+            df = pd.DataFrame([{
+                'Nº': r['id_ordenado'],
+                'Área (mm²)': round(r['area'] * mm**2, 2),
+                'Intensidade': round(r['intensidade_media'], 4)
+            } for r in reg_ord])
+            
+            st.dataframe(df, use_container_width=True)
+            
+            # Download
+            csv = df.to_csv(index=False)
+            st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
+else:
+    st.info("Faça upload de uma imagem")
+    'Área (mm²)': round(area_mm2, 2),
             'Área (pixels)': int(r['area']),
             'Intensidade Média': round(r['intensidade_media'], 4),
             'Centro X': r['centro'][0],

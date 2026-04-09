@@ -4,7 +4,7 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu, sobel
+from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation, opening
 from skimage.measure import label, regionprops
 from skimage.segmentation import clear_border
@@ -27,17 +27,13 @@ def cortar_filme(imagem):
     h, w = imagem.shape[:2]
     return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)]
 
-def detectar_regioes(imagem, area_min, offset, fechamento, erosao):
+def detectar_regioes_global(imagem, area_min, offset, fechamento, erosao):
+    """Detecta regioes com parametros globais"""
     gray = rgb2gray(imagem)
-    
-    # Usar threshold local para melhor precisão nas bordas
     thresh = threshold_otsu(gray)
     thresh_ajustado = thresh * (1 - offset)
-    
-    # Detectar regiões escuras
     binary = gray < thresh_ajustado
     
-    # Operações morfológicas para limpar
     if erosao > 0:
         binary = erosion(binary, square(erosao))
     binary = remove_small_objects(binary, min_size=area_min)
@@ -48,21 +44,57 @@ def detectar_regioes(imagem, area_min, offset, fechamento, erosao):
     regions = regionprops(labeled, intensity_image=gray)
     
     regioes = []
-    for r in regions:
+    for i, r in enumerate(regions):
         if r.area >= area_min:
             minr, minc, maxr, maxc = r.bbox
             w = maxc - minc
             h = maxr - minr
             razao = min(w, h) / max(w, h) if max(w, h) > 0 else 0
             regioes.append({
+                'id': i,
                 'area': r.area,
                 'intensidade': r.mean_intensity,
                 'centro': (int(r.centroid[1]), int(r.centroid[0])),
                 'bbox': (minc, minr, w, h),
-                'razao': razao
+                'razao': razao,
+                'coords': r.coords
             })
     
-    return regioes, thresh, thresh_ajustado, binary
+    return regioes, thresh, thresh_ajustado, binary, gray
+
+def ajustar_regiao(indice, gray, regiao, erosao_ind, dilatacao_ind, fechamento_ind):
+    """Ajusta uma regiao individual"""
+    # Criar mascara para esta regiao
+    mascara = np.zeros(gray.shape, dtype=bool)
+    for coord in regiao['coords']:
+        mascara[coord[0], coord[1]] = True
+    
+    # Aplicar operacoes morfologicas individuais
+    if erosao_ind > 0:
+        mascara = erosion(mascara, square(erosao_ind))
+    if dilatacao_ind > 0:
+        mascara = dilation(mascara, square(dilatacao_ind))
+    if fechamento_ind > 0:
+        mascara = closing(mascara, square(fechamento_ind))
+    
+    # Recalcular propriedades
+    labeled = label(mascara)
+    regions = regionprops(labeled, intensity_image=gray)
+    
+    if len(regions) > 0:
+        r = max(regions, key=lambda x: x.area)
+        minr, minc, maxr, maxc = r.bbox
+        w = maxc - minc
+        h = maxr - minr
+        return {
+            'id': regiao['id'],
+            'area': r.area,
+            'intensidade': r.mean_intensity,
+            'centro': (int(r.centroid[1]), int(r.centroid[0])),
+            'bbox': (minc, minr, w, h),
+            'razao': min(w, h) / max(w, h) if max(w, h) > 0 else 0
+        }
+    return regiao
 
 def ordenar(regioes):
     ordenadas = sorted(regioes, key=lambda x: x['intensidade'], reverse=True)
@@ -92,16 +124,14 @@ def desenhar(imagem, regioes):
         draw.text((cx-tw//2, cy-th//2), txt, fill=(255,255,255), font=fonte)
     return np.array(img_pil)
 
+# Interface
 with st.sidebar:
-    st.header("Configuracoes")
+    st.header("Configuracoes Globais")
     dpi = st.number_input("DPI", 1, 2400, 50)
     area_min = st.slider("Area Minima (pixels)", 100, 50000, 3000, 100)
-    offset = st.slider("Sensibilidade", 0.0, 0.5, 0.15, 0.01, 
-                       help="Maior = detecta mais escuro")
-    fechamento = st.slider("Fechamento", 0, 10, 5, 1,
-                          help="Maior = contornos mais fechados")
-    erosao = st.slider("Erosao", 0, 5, 0, 1,
-                      help="Maior = contornos menores")
+    offset = st.slider("Sensibilidade", 0.0, 0.5, 0.15, 0.01)
+    fechamento = st.slider("Fechamento Global", 0, 20, 5, 1)
+    erosao = st.slider("Erosao Global", 0, 10, 0, 1)
 
 st.header("Upload da Imagem")
 arquivo = st.file_uploader("Imagem EBT3", type=['tif','tiff','png','jpg','jpeg'])
@@ -113,7 +143,7 @@ if arquivo:
     img_orig = np.array(img)
     img_norm = img_orig/255.0 if img_orig.max() > 1 else img_orig
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
         st.subheader("Original")
         st.image(img_orig, use_column_width=True)
@@ -124,39 +154,67 @@ if arquivo:
             if img_filme is None:
                 st.error("Filme nao detectado!")
                 st.stop()
-            st.info(f"Filme: {img_filme.shape[1]}x{img_filme.shape[0]} px")
             
-            regioes, thresh_orig, thresh_ajust, binary = detectar_regioes(
+            regioes, thresh_orig, thresh_ajust, binary, gray = detectar_regioes_global(
                 img_filme, area_min, offset, fechamento, erosao)
             
-            st.info(f"Threshold: {thresh_orig:.3f} -> {thresh_ajust:.3f}")
+            st.info(f"Threshold: {thresh_orig:.3f} -> {thresh_ajust:.3f} | {len(regioes)} regioes detectadas")
             
             if not regioes:
                 st.warning("Nenhuma regiao! Aumente Sensibilidade")
                 st.stop()
             
-            reg_ord = ordenar(regioes)
-            img_res = desenhar(img_filme, reg_ord)
-            
-            with col2:
-                st.subheader(f"{len(regioes)} regioes")
-                st.image(img_res, use_column_width=True)
-            
-            with col3:
-                st.subheader("Mascara")
-                st.image((binary * 255).astype(np.uint8), use_column_width=True)
-            
-            mm = 25.4 / dpi
-            df = pd.DataFrame([{
-                'N': r['id'],
-                'Area_mm2': round(r['area'] * mm * mm, 2),
-                'Intensidade': round(r['intensidade'], 4),
-                'Razao': round(r['razao'], 2)
-            } for r in reg_ord])
-            
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            csv = df.to_csv(index=False)
-            st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
+            # Salvar no session state para ajuste individual
+            st.session_state['regioes'] = regioes
+            st.session_state['gray'] = gray
+            st.session_state['img_filme'] = img_filme
+            st.session_state['ajustado'] = False
+    
+    # Ajuste individual das regioes
+    if 'regioes' in st.session_state:
+        st.markdown("---")
+        st.header("Ajuste Individual das Regioes")
+        st.info("Ajuste cada regiao separadamente se necessario")
+        
+        regioes = st.session_state['regioes']
+        gray = st.session_state['gray']
+        img_filme = st.session_state['img_filme']
+        
+        regioes_ajustadas = []
+        
+        cols = st.columns(len(regioes))
+        for i, (col, regiao) in enumerate(zip(cols, regioes)):
+            with col:
+                st.markdown(f"**Regiao {i+1}**")
+                erosao_ind = st.slider(f"Erosao R{i+1}", 0, 10, 0, 1, key=f"er_{i}")
+                dilatacao_ind = st.slider(f"Dilatacao R{i+1}", 0, 10, 0, 1, key=f"di_{i}")
+                fechamento_ind = st.slider(f"Fechamento R{i+1}", 0, 10, 0, 1, key=f"fe_{i}")
+                
+                # Aplicar ajuste
+                reg_ajust = ajustar_regiao(i, gray, regiao, erosao_ind, dilatacao_ind, fechamento_ind)
+                regioes_ajustadas.append(reg_ajust)
+        
+        # Ordenar e desenhar resultado final
+        reg_ord = ordenar(regioes_ajustadas)
+        img_res = desenhar(img_filme, reg_ord)
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            st.subheader("Resultado Final")
+            st.image(img_res, use_column_width=True)
+        
+        # Tabela
+        mm = 25.4 / dpi
+        df = pd.DataFrame([{
+            'N': r['id'],
+            'Area_mm2': round(r['area'] * mm * mm, 2),
+            'Intensidade': round(r['intensidade'], 4),
+            'Razao': round(r['razao'], 2)
+        } for r in reg_ord])
+        
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        csv = df.to_csv(index=False)
+        st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
 else:
     st.info("Faca upload de uma imagem")

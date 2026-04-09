@@ -1,5 +1,5 @@
 """
-Project Analyzer - Multi-Otsu para detectar regiões irradiadas
+Project Analyzer - Calibração com filme base
 """
 
 import streamlit as st
@@ -9,25 +9,37 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from skimage.color import rgb2gray
-from skimage.filters import threshold_multiotsu
 from skimage.morphology import remove_small_objects, closing, square
 from skimage.measure import label, regionprops
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
 st.title("🔬 Project Analyzer")
+st.markdown("Calibração com filme base não irradiado")
 
-def detectar_regioes(imagem, area_min):
-    """Detecta regiões irradiadas usando Multi-Otsu"""
+def calcular_referencia(imagem):
+    """Calcula a intensidade média do filme base (não irradiado)"""
+    gray = rgb2gray(imagem)
+    return np.mean(gray), np.std(gray)
+
+def detectar_regioes(imagem, media_ref, desvio_ref, fator_desvio, area_min):
+    """
+    Detecta regiões que são significativamente mais escuras que o filme base
+    
+    fator_desvio: quantos desvios abaixo da média considerar como irradiado
+                  2.0 = 2 desvios (padrão)
+                  1.0 = 1 desvio (mais sensível)
+                  3.0 = 3 desvios (menos sensível)
+    """
     gray = rgb2gray(imagem)
     
-    # Multi-Otsu com 3 classes: fundo | filme | irradiado
-    thresholds = threshold_multiotsu(gray, classes=3)
+    # Limite: média do filme base - fator_desvio * desvio
+    limite = media_ref - fator_desvio * desvio_ref
     
-    # Pegar apenas as regiões irradiadas (mais escuras que thresholds[1])
-    binary = gray < thresholds[1]
+    # Detectar pixels abaixo do limite (mais escuros que o filme base)
+    binary = gray < limite
     
-    # Limpeza
+    # Limpeza morfológica
     binary = remove_small_objects(binary, min_size=int(area_min))
     binary = closing(binary, square(5))
     
@@ -46,7 +58,7 @@ def detectar_regioes(imagem, area_min):
                 'bbox': (minc, minr, maxc - minc, maxr - minr)
             })
     
-    return regioes, thresholds
+    return regioes, limite
 
 def ordenar(regioes):
     ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'], reverse=True)
@@ -82,54 +94,91 @@ def desenhar(imagem, regioes):
 # Interface
 with st.sidebar:
     st.header("Configurações")
-    dpi = st.number_input("DPI", 1, 2400, 50)
-    area_min = st.slider("Área Mínima (pixels)", 100, 50000, 10000, 500)
+    dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
+    area_min = st.slider("Área Mínima (pixels)", 100, 50000, 5000, 500)
+    fator_desvio = st.slider("Sensibilidade (σ)", 0.5, 5.0, 2.0, 0.1, 
+                            help="1.0 = mais sensível | 2.0 = padrão | 3.0 = menos sensível")
 
-st.header("Upload da Imagem")
-arquivo = st.file_uploader("Imagem EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
+# PASSO 1: Upload do filme base
+st.header("Passo 1: Filme Base (Não Irradiado)")
+arquivo_base = st.file_uploader("Envie o filme SEM radiação", 
+                                type=['tif', 'tiff', 'png', 'jpg', 'jpeg'],
+                                key="base")
 
-if arquivo:
-    img = Image.open(io.BytesIO(arquivo.read()))
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    img_orig = np.array(img)
-    img_norm = img_orig / 255.0 if img_orig.max() > 1 else img_orig
+if arquivo_base:
+    img_base = Image.open(io.BytesIO(arquivo_base.read()))
+    if img_base.mode != 'RGB':
+        img_base = img_base.convert('RGB')
+    img_base_np = np.array(img_base)
+    img_base_norm = img_base_np / 255.0 if img_base_np.max() > 1 else img_base_np
+    
+    # Calcular referência
+    media_ref, desvio_ref = calcular_referencia(img_base_norm)
     
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.subheader("Original")
-        st.image(img_orig, use_column_width=True)
+        st.subheader("Filme Base")
+        st.image(img_base_np, use_column_width=True)
     
-    if st.button("ANALISAR", type="primary"):
-        with st.spinner("Processando..."):
-            regioes, thresh = detectar_regioes(img_norm, area_min)
-            
-            st.info(f"Thresholds: {thresh[0]:.3f}, {thresh[1]:.3f}")
-            
-            if not regioes:
-                st.warning("Nenhuma região! Reduza Área Mínima")
-                st.stop()
-            
-            reg_ord = ordenar(regioes)
-            img_res = desenhar(img_norm, reg_ord)
-            
-            with col2:
-                st.subheader(f"{len(regioes)} regiões")
-                st.image(img_res, use_column_width=True)
-            
-            # Tabela
-            mm = 25.4 / dpi
-            df = pd.DataFrame([{
-                'N': r['id_ordenado'],
-                'Area_mm2': round(r['area'] * mm**2, 2),
-                'Intensidade': round(r['intensidade_media'], 4)
-            } for r in reg_ord])
-            
-            st.dataframe(df, use_container_width=True)
-            
-            # Download
-            csv = df.to_csv(index=False)
-            st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
+    with col2:
+        st.success(f"✅ Referência calibrada!")
+        st.info(f"Média: {media_ref:.4f}\nDesvio: {desvio_ref:.4f}")
+    
+    # PASSO 2: Upload do filme irradiado
+    st.header("Passo 2: Filme Irradiado")
+    arquivo_irrad = st.file_uploader("Envie o filme COM radiação", 
+                                     type=['tif', 'tiff', 'png', 'jpg', 'jpeg'],
+                                     key="irrad")
+    
+    if arquivo_irrad:
+        img_irrad = Image.open(io.BytesIO(arquivo_irrad.read()))
+        if img_irrad.mode != 'RGB':
+            img_irrad = img_irrad.convert('RGB')
+        img_irrad_np = np.array(img_irrad)
+        img_irrad_norm = img_irrad_np / 255.0 if img_irrad_np.max() > 1 else img_irrad_np
+        
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            st.subheader("Filme Irradiado")
+            st.image(img_irrad_np, use_column_width=True)
+        
+        if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
+            with st.spinner("Processando..."):
+                
+                # Detectar regiões
+                regioes, limite = detectar_regioes(img_irrad_norm, media_ref, desvio_ref, fator_desvio, area_min)
+                
+                st.info(f"Limite de detecção: {limite:.4f} (Média - {fator_desvio}σ)")
+                
+                if not regioes:
+                    st.warning("⚠️ Nenhuma região detectada!")
+                    st.info("Tente reduzir 'Sensibilidade (σ)' ou 'Área Mínima'")
+                    st.stop()
+                
+                # Ordenar e desenhar
+                reg_ord = ordenar(regioes)
+                img_res = desenhar(img_irrad_norm, reg_ord)
+                
+                with col4:
+                    st.subheader(f"Resultado: {len(regioes)} regiões")
+                    st.image(img_res, use_column_width=True)
+                
+                # Tabela
+                st.markdown("---")
+                st.header("📊 Dados das Regiões")
+                
+                mm = 25.4 / dpi
+                df = pd.DataFrame([{
+                    'N': r['id_ordenado'],
+                    'Area_mm2': round(r['area'] * mm**2, 2),
+                    'Intensidade': round(r['intensidade_media'], 4)
+                } for r in reg_ord])
+                
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                
+                # Download
+                csv = df.to_csv(index=False)
+                st.download_button("📥 Download CSV", csv, "resultado.csv", "text/csv")
 else:
-    st.info("Faça upload de uma imagem")
+    st.info("👆 Primeiro envie o filme base (não irradiado)")

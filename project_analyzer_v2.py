@@ -89,11 +89,11 @@ def detectar_fundo_skimage(imagem):
     
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes_skimage(imagem, area_min_percent=0.1):
+def detectar_regioes_skimage(imagem, area_min_percent=0.1, sensibilidade=0.9):
     """
     Detecta regiões irradiadas usando:
-    - Multi-Otsu para múltiplos thresholds
-    - Watershed implícito via regionprops
+    - Otsu para separar filme irradiado do não irradiado
+    - Detecta TODOS os níveis de escurecimento
     """
     gray = rgb2gray(imagem)
     
@@ -101,15 +101,13 @@ def detectar_regioes_skimage(imagem, area_min_percent=0.1):
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    # Usar Multi-Otsu para detectar múltiplos níveis de escurecimento
-    try:
-        thresholds = threshold_multiotsu(gray, classes=3)
-        # Pegar a região mais escura (maior radiação)
-        binary = gray < thresholds[0]
-    except:
-        # Fallback para Otsu simples
-        thresh = threshold_otsu(gray)
-        binary = gray < (thresh * 0.8)  # Um pouco abaixo do threshold
+    # Threshold Otsu para separar fundo (não irradiado) das regiões irradiadas
+    thresh = threshold_otsu(gray)
+    
+    # Detectar TUDO que é mais escuro que o fundo do filme
+    # sensibilidade: 0.9 = detecta regiões 90% mais escuras que o threshold
+    # sensibilidade: 0.99 = detecta até regiões muito claras (pouca radiação)
+    binary = gray < (thresh * sensibilidade)
     
     # Limpeza morfológica
     binary = remove_small_objects(binary, min_size=int(area_minima))
@@ -215,14 +213,14 @@ with st.sidebar:
     
     area_min = st.slider(
         "Área Mínima (%)", 
-        0.01, 5.0, 0.5, 0.01,
+        0.01, 5.0, 0.1, 0.01,
         help="Regiões menores são ignoradas como ruído"
     )
     
-    metodo = st.selectbox(
-        "Método de Detecção",
-        ["Multi-Otsu (Automático)", "Otsu Simples"],
-        help="Multi-Otsu detecta múltiplos níveis de radiação"
+    sensibilidade = st.slider(
+        "Sensibilidade",
+        0.80, 0.99, 0.95, 0.01,
+        help="0.80 = só escuras | 0.99 = detecta até claras"
     )
     
     st.markdown("---")
@@ -268,7 +266,7 @@ if arquivo:
             st.info(f"✅ Filme detectado! Dimensões: {img_filme.shape[1]}x{img_filme.shape[0]} pixels")
             
             # Passo 2: Detectar regiões irradiadas
-            regioes = detectar_regioes_skimage(img_filme, area_min)
+            regioes = detectar_regioes_skimage(img_filme, area_min, sensibilidade)
             
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada! Tente reduzir a área mínima.")

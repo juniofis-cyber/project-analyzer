@@ -89,11 +89,11 @@ def detectar_fundo_skimage(imagem):
     
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes_skimage(imagem, area_min_percent=0.1, sensibilidade=0.9):
+def detectar_regioes_skimage(imagem, area_min_percent=0.1, fator_escurecimento=0.05):
     """
-    Detecta regiões irradiadas usando:
-    - Otsu para separar filme irradiado do não irradiado
-    - Detecta TODOS os níveis de escurecimento
+    Detecta regiões irradiadas dentro do filme:
+    - Calcula intensidade média do filme base (não irradiado)
+    - Detecta regiões que são significativamente mais escuras
     """
     gray = rgb2gray(imagem)
     
@@ -101,13 +101,19 @@ def detectar_regioes_skimage(imagem, area_min_percent=0.1, sensibilidade=0.9):
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    # Threshold Otsu para separar fundo (não irradiado) das regiões irradiadas
-    thresh = threshold_otsu(gray)
+    # Calcular histograma para encontrar a moda (filme base - não irradiado)
+    # A moda representa a cor do filme sem radiação
+    hist, bin_edges = np.histogram(gray.flatten(), bins=256, range=(0, 1))
+    modo_idx = np.argmax(hist)
+    modo_valor = (bin_edges[modo_idx] + bin_edges[modo_idx + 1]) / 2
     
-    # Detectar TUDO que é mais escuro que o fundo do filme
-    # sensibilidade: 0.9 = detecta regiões 90% mais escuras que o threshold
-    # sensibilidade: 0.99 = detecta até regiões muito claras (pouca radiação)
-    binary = gray < (thresh * sensibilidade)
+    # Detectar regiões que são mais escuras que o filme base
+    # fator_escurecimento: quanto mais escuro precisa ser para ser considerado irradiado
+    # 0.05 = 5% mais escuro que o filme base
+    # 0.10 = 10% mais escuro (mais restritivo)
+    # 0.02 = 2% mais escuro (mais sensível)
+    limite = modo_valor * (1 - fator_escurecimento)
+    binary = gray < limite
     
     # Limpeza morfológica
     binary = remove_small_objects(binary, min_size=int(area_minima))
@@ -217,10 +223,10 @@ with st.sidebar:
         help="Regiões menores são ignoradas como ruído"
     )
     
-    sensibilidade = st.slider(
-        "Sensibilidade",
-        0.80, 0.99, 0.95, 0.01,
-        help="0.80 = só escuras | 0.99 = detecta até claras"
+    fator_escurecimento = st.slider(
+        "Fator de Escurecimento",
+        0.01, 0.20, 0.05, 0.01,
+        help="Quanto mais escuro que o filme base (0.05 = 5% mais escuro)"
     )
     
     st.markdown("---")
@@ -266,7 +272,7 @@ if arquivo:
             st.info(f"✅ Filme detectado! Dimensões: {img_filme.shape[1]}x{img_filme.shape[0]} pixels")
             
             # Passo 2: Detectar regiões irradiadas
-            regioes = detectar_regioes_skimage(img_filme, area_min, sensibilidade)
+            regioes = detectar_regioes_skimage(img_filme, area_min, fator_escurecimento)
             
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada! Tente reduzir a área mínima.")

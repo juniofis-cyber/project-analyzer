@@ -1,7 +1,7 @@
 """
-Project Analyzer v2.0
-Baseado em técnicas do Dosepy (Luis Olivares) + OMG Dosimetry
-Usando skimage para detecção mais robusta
+Project Analyzer v3.0
+Baseado no código do Dosepy (Luis Olivares)
+https://github.com/LuisOlivaresJ/Dosepy
 """
 
 import streamlit as st
@@ -10,17 +10,16 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 
-# Importações do Dosepy/OMG
+# Importações do Dosepy
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu, threshold_multiotsu
+from skimage.filters import threshold_otsu
 from skimage.morphology import erosion, dilation, remove_small_objects, remove_small_holes
-from skimage.morphology import disk, square
+from skimage.morphology import square
 from skimage.measure import label, regionprops
-from skimage.segmentation import clear_border
-from skimage.transform import resize
+from skimage.segmentation import clear_border, find_boundaries
 
 st.set_page_config(
-    page_title="Project Analyzer v2",
+    page_title="Project Analyzer v3",
     page_icon="🔬",
     layout="wide"
 )
@@ -43,39 +42,36 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def detectar_fundo_skimage(imagem):
+def detectar_fundo_dosepy(imagem):
     """
-    Detecta o filme usando técnica do Dosepy:
-    - Otsu para separar fundo
-    - Erosão para limpar bordas
+    Detecta o filme usando técnica EXATA do Dosepy:
+    - Otsu + erosão + label
     """
     gray = rgb2gray(imagem)
     
-    # Threshold Otsu (automático!)
+    # Threshold Otsu (igual ao Dosepy)
     thresh = threshold_otsu(gray)
     binary = gray < thresh  # Filme é mais escuro que fundo
     
-    # Limpar bordas (remove objetos que tocam a borda)
+    # Limpar bordas
     binary = clear_border(binary)
     
-    # Remover pequenos ruídos
+    # Erosão para limpar bordas (técnica do Dosepy)
+    binary = erosion(binary, square(5))
+    binary = dilation(binary, square(3))
+    
+    # Remover ruídos
     binary = remove_small_objects(binary, min_size=1000)
     binary = remove_small_holes(binary, area_threshold=1000)
     
-    # Erosão para refinar bordas (técnica do Dosepy)
-    binary = erosion(binary, square(5))
-    
-    # Dilatação para recuperar tamanho
-    binary = dilation(binary, square(3))
-    
-    # Encontrar propriedades da região
+    # Labeling (igual ao Dosepy)
     labeled = label(binary)
     regions = regionprops(labeled)
     
     if not regions:
         return imagem, None
     
-    # Pegar a maior região (o filme)
+    # Pegar a maior região (o filme) - igual ao Dosepy
     largest = max(regions, key=lambda r: r.area)
     minr, minc, maxr, maxc = largest.bbox
     
@@ -89,11 +85,10 @@ def detectar_fundo_skimage(imagem):
     
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes_skimage(imagem, area_min_percent=0.1, fator_escurecimento=0.05):
+def detectar_regioes_dosepy(imagem, area_min_percent=0.1, thresh_percent=80):
     """
-    Detecta regiões irradiadas dentro do filme:
-    - Calcula intensidade média do filme base (não irradiado)
-    - Detecta regiões que são significativamente mais escuras
+    Detecta regiões irradiadas DENTRO do filme
+    Adaptado do Dosepy - detecta múltiplos níveis de escurecimento
     """
     gray = rgb2gray(imagem)
     
@@ -101,27 +96,26 @@ def detectar_regioes_skimage(imagem, area_min_percent=0.1, fator_escurecimento=0
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    # Calcular histograma para encontrar a moda (filme base - não irradiado)
-    # A moda representa a cor do filme sem radiação
+    # Calcular a intensidade média do filme (região não irradiada)
+    # Usamos a moda (valor mais frequente) como referência
     hist, bin_edges = np.histogram(gray.flatten(), bins=256, range=(0, 1))
     modo_idx = np.argmax(hist)
-    modo_valor = (bin_edges[modo_idx] + bin_edges[modo_idx + 1]) / 2
+    filme_base = (bin_edges[modo_idx] + bin_edges[modo_idx + 1]) / 2
     
-    # Detectar regiões que são mais escuras que o filme base
-    # fator_escurecimento: quanto mais escuro precisa ser para ser considerado irradiado
-    # 0.05 = 5% mais escuro que o filme base
-    # 0.10 = 10% mais escuro (mais restritivo)
-    # 0.02 = 2% mais escuro (mais sensível)
-    limite = modo_valor * (1 - fator_escurecimento)
+    # Detectar TODAS as regiões mais escuras que o filme base
+    # thresh_percent: porcentagem do escurecimento mínimo para considerar
+    # 80% = detecta tudo que é pelo menos 20% mais escuro que o filme base
+    limite = filme_base * (thresh_percent / 100)
+    
     binary = gray < limite
     
-    # Limpeza morfológica
+    # Limpeza morfológica (igual ao Dosepy)
     binary = remove_small_objects(binary, min_size=int(area_minima))
     binary = remove_small_holes(binary, area_threshold=int(area_minima/2))
-    binary = erosion(binary, disk(3))
-    binary = dilation(binary, disk(2))
+    binary = erosion(binary, square(3))
+    binary = dilation(binary, square(2))
     
-    # Labeling (cada região conectada recebe um número)
+    # Labeling (igual ao Dosepy)
     labeled = label(binary)
     regions = regionprops(labeled, intensity_image=gray)
     
@@ -135,10 +129,8 @@ def detectar_regioes_skimage(imagem, area_min_percent=0.1, fator_escurecimento=0
             'id': i,
             'area': region.area,
             'intensidade_media': region.mean_intensity,
-            'centro': (int(region.centroid[1]), int(region.centroid[0])),  # (x, y)
+            'centro': (int(region.centroid[1]), int(region.centroid[0])),
             'bbox': region.bbox,
-            'coords': region.coords,
-            'contorno': region.coords
         })
     
     return regioes
@@ -146,9 +138,7 @@ def detectar_regioes_skimage(imagem, area_min_percent=0.1, fator_escurecimento=0
 def ordenar_por_escurecimento(regioes):
     """
     Ordena do mais CLARO (maior intensidade) para o mais ESCURO (menor intensidade)
-    Intensidade: 0 = preto, 1 = branco (skimage normaliza 0-1)
     """
-    # Maior intensidade = mais claro
     regioes_ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'], reverse=True)
     
     for i, regiao in enumerate(regioes_ordenadas, 1):
@@ -156,9 +146,15 @@ def ordenar_por_escurecimento(regioes):
     
     return regioes_ordenadas
 
-def desenhar_resultado_skimage(imagem, regioes):
-    """Desenha contornos e numeração usando PIL"""
-    img_pil = Image.fromarray((imagem * 255).astype(np.uint8) if imagem.max() <= 1 else imagem.astype(np.uint8))
+def desenhar_resultado(imagem, regioes):
+    """Desenha contornos e numeração"""
+    # Converter para uint8
+    if imagem.max() <= 1:
+        img_uint8 = (imagem * 255).astype(np.uint8)
+    else:
+        img_uint8 = imagem.astype(np.uint8)
+    
+    img_pil = Image.fromarray(img_uint8)
     draw = ImageDraw.Draw(img_pil)
     
     try:
@@ -167,7 +163,6 @@ def desenhar_resultado_skimage(imagem, regioes):
         fonte = ImageFont.load_default()
     
     for regiao in regioes:
-        # Desenhar contorno (aproximação pela bounding box ou convex hull)
         minr, minc, maxr, maxc = regiao['bbox']
         
         # Contorno verde
@@ -177,18 +172,15 @@ def desenhar_resultado_skimage(imagem, regioes):
         cx, cy = regiao['centro']
         numero = str(regiao['id_ordenado'])
         
-        # Fundo preto
         bbox = draw.textbbox((0, 0), numero, font=fonte)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.rectangle([cx-tw//2-4, cy-th//2-4, cx+tw//2+4, cy+th//2+4], fill=(0, 0, 0))
-        
-        # Texto branco
         draw.text((cx-tw//2, cy-th//2), numero, fill=(255, 255, 255), font=fonte)
     
     return np.array(img_pil)
 
 def criar_dataframe(regioes, dpi=50):
-    """Cria DataFrame com dados das regiões"""
+    """Cria DataFrame com dados"""
     mm_por_pixel = 25.4 / dpi
     
     dados = []
@@ -207,8 +199,8 @@ def criar_dataframe(regioes, dpi=50):
 
 # ============ INTERFACE ============
 
-st.markdown('<p class="main-title">🔬 Project Analyzer v2.0</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Baseado em Dosepy + OMG Dosimetry | Usando scikit-image</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🔬 Project Analyzer v3.0</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Baseado no Dosepy de Luis Olivares</p>', unsafe_allow_html=True)
 st.markdown("---")
 
 # Sidebar
@@ -219,18 +211,18 @@ with st.sidebar:
     
     area_min = st.slider(
         "Área Mínima (%)", 
-        0.01, 5.0, 0.1, 0.01,
+        0.01, 5.0, 0.5, 0.01,
         help="Regiões menores são ignoradas como ruído"
     )
     
-    fator_escurecimento = st.slider(
-        "Fator de Escurecimento",
-        0.01, 0.20, 0.05, 0.01,
-        help="Quanto mais escuro que o filme base (0.05 = 5% mais escuro)"
+    thresh_percent = st.slider(
+        "Threshold (% do filme base)",
+        50, 99, 80, 1,
+        help="80% = detecta tudo 20% mais escuro que o filme base"
     )
     
     st.markdown("---")
-    st.info("💡 **Baseado em:**\n• Dosepy (Luis Olivares)\n• OMG Dosimetry (Jean-Francois Cabana)")
+    st.info("💡 Baseado no Dosepy\ngithub.com/LuisOlivaresJ/Dosepy")
 
 # Upload
 st.header("📁 Upload da Imagem")
@@ -247,7 +239,7 @@ if arquivo:
     
     img_original = np.array(img_pil)
     
-    # Normalizar para 0-1 se necessário
+    # Normalizar
     if img_original.max() > 1:
         img_normalized = img_original / 255.0
     else:
@@ -260,29 +252,30 @@ if arquivo:
         st.image(img_original, use_column_width=True)
     
     if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
-        with st.spinner("Processando com skimage..."):
+        with st.spinner("Processando com Dosepy..."):
             
-            # Passo 1: Detectar filme
-            img_filme, bbox = detectar_fundo_skimage(img_normalized)
+            # Passo 1: Detectar filme (código Dosepy)
+            img_filme, bbox = detectar_fundo_dosepy(img_normalized)
             
             if bbox is None:
                 st.error("❌ Não foi possível detectar o filme!")
                 st.stop()
             
-            st.info(f"✅ Filme detectado! Dimensões: {img_filme.shape[1]}x{img_filme.shape[0]} pixels")
+            st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} px")
             
-            # Passo 2: Detectar regiões irradiadas
-            regioes = detectar_regioes_skimage(img_filme, area_min, fator_escurecimento)
+            # Passo 2: Detectar regiões irradiadas (adaptado do Dosepy)
+            regioes = detectar_regioes_dosepy(img_filme, area_min, thresh_percent)
             
             if not regioes:
-                st.warning("⚠️ Nenhuma região detectada! Tente reduzir a área mínima.")
+                st.warning("⚠️ Nenhuma região detectada!")
+                st.info("Tente reduzir 'Área Mínima' ou aumentar 'Threshold'")
                 st.stop()
             
             # Passo 3: Ordenar
             regioes_ord = ordenar_por_escurecimento(regioes)
             
             # Passo 4: Desenhar
-            img_resultado = desenhar_resultado_skimage(img_filme, regioes_ord)
+            img_resultado = desenhar_resultado(img_filme, regioes_ord)
             
             # DataFrame
             df = criar_dataframe(regioes_ord, dpi)
@@ -323,24 +316,30 @@ if arquivo:
 
 else:
     st.info("👆 Faça upload de uma imagem para começar!")
-    
-    # Exemplo de como funciona
-    with st.expander("📖 Como funciona?"):
-        st.markdown("""
-        **Técnica baseada em Dosepy e OMG Dosimetry:**
-        
-        1. **Detecção do Filme:**
-           - Threshold Otsu automático
-           - Erosão morfológica para limpar bordas
-           - Seleção da maior região conectada
-        
-        2. **Detecção de Regiões Irradiadas:**
-           - Multi-Otsu para múltiplos níveis de radiação
-           - Remoção de ruídos via `remove_small_objects`
-           - Labeling com `skimage.measure.label`
-        
-        3. **Ordenação:**
-           - Ordena por intensidade média (maior = mais claro)
-           - Número 1 = menor radiação
-           - Número N = maior radiação
-        """)
+l)
+                """)
+                
+                # Download do CSV
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="⬇️ Download CSV",
+                    data=csv,
+                    file_name=f"resultado_{arquivo.name.split('.')[0]}.csv",
+                    mime="text/csv"
+                )
+                
+                # Download da imagem
+                resultado_pil = Image.fromarray(imagem_resultado)
+                buf = io.BytesIO()
+                resultado_pil.save(buf, format='PNG')
+                byte_imagem = buf.getvalue()
+                
+                st.download_button(
+                    label="⬇️ Download Imagem",
+                    data=byte_imagem,
+                    file_name=f"analisado_{arquivo.name.split('.')[0]}.png",
+                    mime="image/png"
+                )
+
+if __name__ == "__main__":
+    main()

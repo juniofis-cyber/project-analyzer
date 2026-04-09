@@ -1,6 +1,6 @@
 """
-Project Analyzer v5.0
-Detecção de múltiplos níveis de radiação usando Multi-Otsu
+Project Analyzer v6.0
+Detecção de anomalias baseada em desvio padrão do filme
 """
 
 import streamlit as st
@@ -10,11 +10,11 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu, threshold_multiotsu
 from skimage.morphology import erosion, dilation, remove_small_objects, remove_small_holes
-from skimage.morphology import square, disk
+from skimage.morphology import disk
 from skimage.measure import label, regionprops
 from skimage.segmentation import clear_border
+from skimage.filters import threshold_otsu
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
@@ -31,8 +31,8 @@ def detectar_fundo(imagem):
     thresh = threshold_otsu(gray)
     binary = gray < thresh
     binary = clear_border(binary)
-    binary = erosion(binary, square(5))
-    binary = dilation(binary, square(3))
+    binary = erosion(binary, np.ones((5, 5)))
+    binary = dilation(binary, np.ones((3, 3)))
     binary = remove_small_objects(binary, min_size=1000)
     binary = remove_small_holes(binary, area_threshold=1000)
     labeled = label(binary)
@@ -49,45 +49,31 @@ def detectar_fundo(imagem):
     maxc = min(w, maxc + margem)
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes_multiotsu(imagem, area_min_percent=0.5, n_classes=4, indice_classe=1):
+def detectar_regioes_anomalias(imagem, area_min_percent=0.5, n_sigmas=2.0):
     """
-    Detecta regiões irradiadas usando Multi-Otsu
+    Detecta regiões irradiadas como anomalias estatísticas
     
-    n_classes: número de níveis de intensidade (4 = fundo, claro, médio, escuro)
-    indice_classe: qual(is) classe(s) considerar como irradiada
-                   1 = só mais escuras
-                   2 = médias e escuras  
-                   3 = clara, média e escura (todas menos fundo)
+    n_sigmas: número de desvios padrão abaixo da média para considerar como irradiado
+                1.0 = mais sensível (detecta mais)
+                2.0 = padrão
+                3.0 = menos sensível (só escuras)
     """
     gray = rgb2gray(imagem)
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    try:
-        # Multi-Otsu: separa em n_classes níveis
-        thresholds = threshold_multiotsu(gray, classes=n_classes)
-        
-        # thresholds[0] = separa fundo do resto
-        # thresholds[1] = separa claro do médio  
-        # thresholds[2] = separa médio do escuro (se n_classes=4)
-        
-        # Pegar regiões baseado no índice
-        if indice_classe == 1:
-            # Só a classe mais escura
-            binary = gray < thresholds[-1]
-        elif indice_classe == 2:
-            # Médio + escuro
-            binary = gray < thresholds[-2]
-        else:
-            # Todas as classes exceto fundo (claro + médio + escuro)
-            binary = gray < thresholds[0]
-            
-    except:
-        # Fallback para Otsu simples
-        thresh = threshold_otsu(gray)
-        binary = gray < thresh
+    # Calcular estatísticas do filme (assumindo que a maioria é não irradiada)
+    media = np.mean(gray)
+    desvio = np.std(gray)
     
-    # Limpeza
+    # Threshold: média - n_sigmas * desvio
+    # Regiões irradiadas são MAIS ESCURAS (menor intensidade)
+    limite = media - n_sigmas * desvio
+    
+    # Detectar pixels abaixo do limite (mais escuros)
+    binary = gray < limite
+    
+    # Limpeza morfológica
     binary = remove_small_objects(binary, min_size=int(area_minima))
     binary = remove_small_holes(binary, area_threshold=int(area_minima/2))
     binary = erosion(binary, disk(3))
@@ -107,7 +93,7 @@ def detectar_regioes_multiotsu(imagem, area_min_percent=0.5, n_classes=4, indice
             'bbox': region.bbox,
         })
     
-    return regioes
+    return regioes, media, desvio, limite
 
 def ordenar_por_escurecimento(regioes):
     regioes_ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'], reverse=True)
@@ -152,8 +138,8 @@ def criar_dataframe(regioes, dpi=50):
         })
     return pd.DataFrame(dados)
 
-st.markdown('<p class="main-title">🔬 Project Analyzer v5.0</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Multi-Otsu para múltiplos níveis de radiação</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🔬 Project Analyzer v6.0</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Detecção por anomalias estatísticas (desvio padrão)</p>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
@@ -161,27 +147,14 @@ with st.sidebar:
     dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
     area_min = st.slider("Área Mínima (%)", 0.01, 5.0, 0.5, 0.01, help="Regiões menores são ignoradas")
     
-    n_classes = st.selectbox(
-        "Número de Classes",
-        [3, 4, 5],
-        index=1,
-        help="4 = fundo, claro, médio, escuro"
-    )
-    
-    indice_classe = st.selectbox(
-        "Classes a Detectar",
-        [1, 2, 3],
-        index=2,
-        format_func=lambda x: {
-            1: "1 - Só escuras",
-            2: "2 - Médias + escuras", 
-            3: "3 - Todas (claro+médio+escuro)"
-        }[x],
-        help="Selecione quais níveis de radiação detectar"
+    n_sigmas = st.slider(
+        "Sensibilidade (σ)",
+        0.5, 4.0, 1.5, 0.1,
+        help="1.0 = detecta tudo | 2.0 = padrão | 3.0 = só escuras"
     )
     
     st.markdown("---")
-    st.info("💡 Dica: Use 'Todas' para detectar as 4 regiões")
+    st.info("💡 Dica: Reduza σ se não detectar todas as regiões")
 
 st.header("📁 Upload da Imagem")
 arquivo = st.file_uploader("Selecione a imagem do filme EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
@@ -202,18 +175,19 @@ if arquivo:
         st.image(img_original, use_column_width=True)
     
     if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
-        with st.spinner("Processando com Multi-Otsu..."):
+        with st.spinner("Processando..."):
             img_filme, bbox = detectar_fundo(img_normalized)
             if bbox is None:
                 st.error("❌ Não foi possível detectar o filme!")
                 st.stop()
-            st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} px")
             
-            regioes = detectar_regioes_multiotsu(img_filme, area_min, n_classes, indice_classe)
+            regioes, media, desvio, limite = detectar_regioes_anomalias(img_filme, area_min, n_sigmas)
+            
+            st.info(f"📊 Estatísticas do filme: Média={media:.3f}, σ={desvio:.3f}, Limite={limite:.3f}")
             
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada!")
-                st.info("Tente mudar 'Classes a Detectar' para 'Todas'")
+                st.info("Tente reduzir 'Sensibilidade (σ)'")
                 st.stop()
             
             regioes_ord = ordenar_por_escurecimento(regioes)
@@ -229,6 +203,21 @@ if arquivo:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Regiões", len(regioes))
             c2.metric("DPI", dpi)
+            c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
+            c4.metric("Ordenação", "1=Claro → N=Escuro")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                csv = df.to_csv(index=False)
+                st.download_button("📥 Download CSV", csv, f"resultado_{arquivo.name.split('.')[0]}.csv", "text/csv", use_container_width=True)
+            with col_d2:
+                buf = io.BytesIO()
+                Image.fromarray(img_resultado).save(buf, format='PNG')
+                st.download_button("📥 Download Imagem", buf.getvalue(), f"analisado_{arquivo.name.split('.')[0]}.png", "image/png", use_container_width=True)
+else:
+    st.info("👆 Faça upload de uma imagem para começar!")
+i)
             c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
             c4.metric("Ordenação", "1=Claro → N=Escuro")
             st.dataframe(df, use_container_width=True, hide_index=True)

@@ -1,6 +1,5 @@
 """
-Project Analyzer - Baseado no grain-analysis de José Henrique Roveda
-https://github.com/josehenriqueroveda/grain-analysis
+Project Analyzer - Baseado no grain-analysis (adaptado com skimage)
 """
 
 import streamlit as st
@@ -8,7 +7,12 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
-import cv2
+
+from skimage.color import rgb2gray
+from skimage.filters import threshold_otsu, gaussian
+from skimage.morphology import closing, square, remove_small_objects
+from skimage.measure import label, regionprops, find_contours
+from skimage.segmentation import clear_border
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
@@ -17,74 +21,86 @@ st.markdown("Detecção de regiões irradiadas em filme EBT3")
 
 def detectar_fundo(imagem):
     """Detecta e corta o filme da imagem"""
-    gray = cv2.cvtColor(imagem, cv2.COLOR_RGB2GRAY)
+    gray = rgb2gray(imagem)
     
     # Otsu para separar fundo branco do filme
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresh = threshold_otsu(gray)
+    binary = gray < thresh
     
-    # Encontrar contornos
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Limpar bordas
+    binary = clear_border(binary)
     
-    if not contours:
+    # Remover ruídos pequenos
+    binary = remove_small_objects(binary, min_size=1000)
+    
+    # Labeling
+    labeled = label(binary)
+    regions = regionprops(labeled)
+    
+    if not regions:
         return imagem, None
     
     # Pegar o maior contorno (o filme)
-    largest = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest)
+    largest = max(regions, key=lambda r: r.area)
+    minr, minc, maxr, maxc = largest.bbox
     
     # Cortar com margem
     margem = 20
-    h_img, w_img = imagem.shape[:2]
-    x1 = max(0, x - margem)
-    y1 = max(0, y - margem)
-    x2 = min(w_img, x + w + margem)
-    y2 = min(h_img, y + h + margem)
+    h, w = imagem.shape[:2]
+    minr = max(0, minr - margem)
+    minc = max(0, minc - margem)
+    maxr = min(h, maxr + margem)
+    maxc = min(w, maxc + margem)
     
-    return imagem[y1:y2, x1:x2], (x1, y1, x2, y2)
+    return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
 def detectar_regioes(imagem, area_min_pixels):
     """
-    Detecta regiões irradiadas usando técnica do grain-analysis
+    Detecta regiões irradiadas usando técnica similar ao grain-analysis
+    mas com skimage
     """
-    # Converter para grayscale
-    gray = cv2.cvtColor(imagem, cv2.COLOR_RGB2GRAY)
+    gray = rgb2gray(imagem)
     
     # Blur para reduzir ruído
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    blurred = gaussian(gray, sigma=2)
     
     # Threshold Otsu (inverso - detecta escuro)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    thresh = threshold_otsu(blurred)
+    binary = blurred < thresh
     
-    # Encontrar contornos
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Remover objetos pequenos
+    binary = remove_small_objects(binary, min_size=int(area_min_pixels))
     
-    # Processar contornos
+    # Fechar buracos
+    binary = closing(binary, square(5))
+    
+    # Labeling
+    labeled = label(binary)
+    regions = regionprops(labeled, intensity_image=gray)
+    
+    # Processar regiões
     regioes = []
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area > area_min_pixels:
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Calcular intensidade média da região
-            mask = np.zeros(gray.shape, dtype=np.uint8)
-            cv2.drawContours(mask, [contour], -1, 255, -1)
-            intensidade = cv2.mean(gray, mask=mask)[0]
-            
-            # Centro
-            M = cv2.moments(contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-            else:
-                cx, cy = x + w//2, y + h//2
-            
-            regioes.append({
-                'area': area,
-                'intensidade_media': intensidade,
-                'centro': (cx, cy),
-                'bbox': (x, y, w, h),
-                'contorno': contour
-            })
+    for region in regions:
+        if region.area < area_min_pixels:
+            continue
+        
+        minr, minc, maxr, maxc = region.bbox
+        w = maxc - minc
+        h = maxr - minr
+        
+        # Calcular intensidade média
+        intensidade = region.mean_intensity
+        
+        # Centro
+        cx = int(region.centroid[1])
+        cy = int(region.centroid[0])
+        
+        regioes.append({
+            'area': region.area,
+            'intensidade_media': intensidade,
+            'centro': (cx, cy),
+            'bbox': (minc, minr, w, h)
+        })
     
     return regioes
 
@@ -97,28 +113,40 @@ def ordenar_por_escurecimento(regioes):
 
 def desenhar_resultado(imagem, regioes):
     """Desenha contornos e numeração"""
-    img = imagem.copy()
+    # Converter para uint8
+    if imagem.max() <= 1:
+        img_uint8 = (imagem * 255).astype(np.uint8)
+    else:
+        img_uint8 = imagem.astype(np.uint8)
+    
+    img_pil = Image.fromarray(img_uint8)
+    draw = ImageDraw.Draw(img_pil)
+    
+    try:
+        fonte = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
+    except:
+        fonte = ImageFont.load_default()
     
     for r in regioes:
         x, y, w, h = r['bbox']
         
         # Contorno verde
-        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+        draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=3)
         
-        # Número
+        # Número no centro
         cx, cy = r['centro']
         numero = str(r['id_ordenado'])
         
         # Fundo preto
-        (tw, th), _ = cv2.getTextSize(numero, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
-        cv2.rectangle(img, (cx - tw//2 - 5, cy - th//2 - 5), 
-                     (cx + tw//2 + 5, cy + th//2 + 5), (0, 0, 0), -1)
+        bbox = draw.textbbox((0, 0), numero, font=fonte)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.rectangle([cx - tw//2 - 4, cy - th//2 - 4, 
+                       cx + tw//2 + 4, cy + th//2 + 4], fill=(0, 0, 0))
         
         # Texto branco
-        cv2.putText(img, numero, (cx - tw//2, cy + th//2), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        draw.text((cx - tw//2, cy - th//2), numero, fill=(255, 255, 255), font=fonte)
     
-    return img
+    return np.array(img_pil)
 
 def criar_dataframe(regioes, dpi):
     """Cria DataFrame com dados"""
@@ -130,7 +158,7 @@ def criar_dataframe(regioes, dpi):
             'Número': r['id_ordenado'],
             'Área (mm²)': round(area_mm2, 2),
             'Área (pixels)': int(r['area']),
-            'Intensidade Média': round(r['intensidade_media'], 2),
+            'Intensidade Média': round(r['intensidade_media'], 4),
             'Centro X': r['centro'][0],
             'Centro Y': r['centro'][1]
         })
@@ -140,10 +168,10 @@ def criar_dataframe(regioes, dpi):
 with st.sidebar:
     st.header("⚙️ Configurações")
     dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
-    area_min = st.slider("Área Mínima (pixels)", 100, 10000, 1000, 100, 
+    area_min = st.slider("Área Mínima (pixels)", 100, 20000, 5000, 100, 
                         help="Aumente se detectar ruídos pequenos")
     st.markdown("---")
-    st.info("💡 Baseado em grain-analysis\ngithub.com/josehenriqueroveda/grain-analysis")
+    st.info("💡 Baseado em grain-analysis")
 
 st.header("📁 Upload da Imagem")
 arquivo = st.file_uploader("Selecione a imagem do filme EBT3", 
@@ -156,6 +184,12 @@ if arquivo:
         img_pil = img_pil.convert('RGB')
     img_original = np.array(img_pil)
     
+    # Normalizar
+    if img_original.max() > 1:
+        img_normalized = img_original / 255.0
+    else:
+        img_normalized = img_original
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -166,7 +200,7 @@ if arquivo:
         with st.spinner("Processando..."):
             
             # Passo 1: Detectar filme
-            img_filme, bbox = detectar_fundo(img_original)
+            img_filme, bbox = detectar_fundo(img_normalized)
             
             if bbox is None:
                 st.error("❌ Não foi possível detectar o filme!")

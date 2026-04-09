@@ -1,6 +1,6 @@
 """
-Project Analyzer v4.0
-Detecção de regiões irradiadas em filme EBT3
+Project Analyzer v5.0
+Detecção de múltiplos níveis de radiação usando Multi-Otsu
 """
 
 import streamlit as st
@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu, threshold_local
+from skimage.filters import threshold_otsu, threshold_multiotsu
 from skimage.morphology import erosion, dilation, remove_small_objects, remove_small_holes
 from skimage.morphology import square, disk
 from skimage.measure import label, regionprops
@@ -49,25 +49,43 @@ def detectar_fundo(imagem):
     maxc = min(w, maxc + margem)
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes(imagem, area_min_percent=0.5, fator_otsu=0.85):
+def detectar_regioes_multiotsu(imagem, area_min_percent=0.5, n_classes=4, indice_classe=1):
     """
-    Detecta regiões irradiadas usando Otsu no filme
-    fator_otsu: multiplicador do threshold Otsu (0.8 = mais sensível, 1.0 = menos)
+    Detecta regiões irradiadas usando Multi-Otsu
+    
+    n_classes: número de níveis de intensidade (4 = fundo, claro, médio, escuro)
+    indice_classe: qual(is) classe(s) considerar como irradiada
+                   1 = só mais escuras
+                   2 = médias e escuras  
+                   3 = clara, média e escura (todas menos fundo)
     """
     gray = rgb2gray(imagem)
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
     
-    # Usar Otsu diretamente no filme cortado
-    # Isso separa automaticamente: fundo (claro) vs regiões irradiadas (escuras)
-    thresh = threshold_otsu(gray)
-    
-    # Ajustar threshold com fator
-    # fator_otsu < 1.0 = detecta mais coisas (mais sensível)
-    # fator_otsu > 1.0 = detecta menos coisas (mais restritivo)
-    thresh_ajustado = thresh * fator_otsu
-    
-    binary = gray < thresh_ajustado
+    try:
+        # Multi-Otsu: separa em n_classes níveis
+        thresholds = threshold_multiotsu(gray, classes=n_classes)
+        
+        # thresholds[0] = separa fundo do resto
+        # thresholds[1] = separa claro do médio  
+        # thresholds[2] = separa médio do escuro (se n_classes=4)
+        
+        # Pegar regiões baseado no índice
+        if indice_classe == 1:
+            # Só a classe mais escura
+            binary = gray < thresholds[-1]
+        elif indice_classe == 2:
+            # Médio + escuro
+            binary = gray < thresholds[-2]
+        else:
+            # Todas as classes exceto fundo (claro + médio + escuro)
+            binary = gray < thresholds[0]
+            
+    except:
+        # Fallback para Otsu simples
+        thresh = threshold_otsu(gray)
+        binary = gray < thresh
     
     # Limpeza
     binary = remove_small_objects(binary, min_size=int(area_minima))
@@ -134,17 +152,36 @@ def criar_dataframe(regioes, dpi=50):
         })
     return pd.DataFrame(dados)
 
-st.markdown('<p class="main-title">🔬 Project Analyzer v4.0</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Detecção de Regiões Irradiadas em EBT3</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🔬 Project Analyzer v5.0</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Multi-Otsu para múltiplos níveis de radiação</p>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
     st.header("⚙️ Configurações")
     dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
     area_min = st.slider("Área Mínima (%)", 0.01, 5.0, 0.5, 0.01, help="Regiões menores são ignoradas")
-    fator_otsu = st.slider("Fator Otsu", 0.70, 1.00, 0.85, 0.01, help="0.70 = mais sensível | 1.00 = menos sensível")
+    
+    n_classes = st.selectbox(
+        "Número de Classes",
+        [3, 4, 5],
+        index=1,
+        help="4 = fundo, claro, médio, escuro"
+    )
+    
+    indice_classe = st.selectbox(
+        "Classes a Detectar",
+        [1, 2, 3],
+        index=2,
+        format_func=lambda x: {
+            1: "1 - Só escuras",
+            2: "2 - Médias + escuras", 
+            3: "3 - Todas (claro+médio+escuro)"
+        }[x],
+        help="Selecione quais níveis de radiação detectar"
+    )
+    
     st.markdown("---")
-    st.info("💡 Dica: Se não detectar todas, reduza o Fator Otsu")
+    st.info("💡 Dica: Use 'Todas' para detectar as 4 regiões")
 
 st.header("📁 Upload da Imagem")
 arquivo = st.file_uploader("Selecione a imagem do filme EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
@@ -165,18 +202,18 @@ if arquivo:
         st.image(img_original, use_column_width=True)
     
     if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
-        with st.spinner("Processando..."):
+        with st.spinner("Processando com Multi-Otsu..."):
             img_filme, bbox = detectar_fundo(img_normalized)
             if bbox is None:
                 st.error("❌ Não foi possível detectar o filme!")
                 st.stop()
             st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} px")
             
-            regioes = detectar_regioes(img_filme, area_min, fator_otsu)
+            regioes = detectar_regioes_multiotsu(img_filme, area_min, n_classes, indice_classe)
             
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada!")
-                st.info("Tente reduzir 'Área Mínima' ou 'Fator Otsu'")
+                st.info("Tente mudar 'Classes a Detectar' para 'Todas'")
                 st.stop()
             
             regioes_ord = ordenar_por_escurecimento(regioes)

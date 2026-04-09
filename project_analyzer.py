@@ -24,9 +24,6 @@ def detectar_regioes(imagem, area_min):
     # Multi-Otsu com 3 classes: fundo | filme | irradiado
     thresholds = threshold_multiotsu(gray, classes=3)
     
-    # thresholds[0] = separa fundo do filme
-    # thresholds[1] = separa filme das regiões irradiadas
-    
     # Pegar apenas as regiões irradiadas (mais escuras que thresholds[1])
     binary = gray < thresholds[1]
     
@@ -124,8 +121,8 @@ if arquivo:
             # Tabela
             mm = 25.4 / dpi
             df = pd.DataFrame([{
-                'Nº': r['id_ordenado'],
-                'Área (mm²)': round(r['area'] * mm**2, 2),
+                'N': r['id_ordenado'],
+                'Area_mm2': round(r['area'] * mm**2, 2),
                 'Intensidade': round(r['intensidade_media'], 4)
             } for r in reg_ord])
             
@@ -136,105 +133,3 @@ if arquivo:
             st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
 else:
     st.info("Faça upload de uma imagem")
-    'Área (mm²)': round(area_mm2, 2),
-            'Área (pixels)': int(r['area']),
-            'Intensidade Média': round(r['intensidade_media'], 4),
-            'Centro X': r['centro'][0],
-            'Centro Y': r['centro'][1]
-        })
-    return pd.DataFrame(dados)
-
-# Interface
-with st.sidebar:
-    st.header("⚙️ Configurações")
-    dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
-    area_min = st.slider("Área Mínima (pixels)", 100, 20000, 5000, 100, 
-                        help="Aumente se detectar ruídos pequenos")
-    st.markdown("---")
-    st.info("💡 Baseado em grain-analysis")
-
-st.header("📁 Upload da Imagem")
-arquivo = st.file_uploader("Selecione a imagem do filme EBT3", 
-                          type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
-
-if arquivo:
-    # Ler imagem
-    img_pil = Image.open(io.BytesIO(arquivo.read()))
-    if img_pil.mode != 'RGB':
-        img_pil = img_pil.convert('RGB')
-    img_original = np.array(img_pil)
-    
-    # Normalizar
-    if img_original.max() > 1:
-        img_normalized = img_original / 255.0
-    else:
-        img_normalized = img_original
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Imagem Original")
-        st.image(img_original, use_column_width=True)
-    
-    if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
-        with st.spinner("Processando..."):
-            
-            # Passo 1: Detectar filme
-            img_filme, bbox = detectar_fundo(img_normalized)
-            
-            if bbox is None:
-                st.error("❌ Não foi possível detectar o filme!")
-                st.stop()
-            
-            st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} pixels")
-            
-            # Passo 2: Detectar regiões
-            regioes = detectar_regioes(img_filme, area_min)
-            
-            if not regioes:
-                st.warning("⚠️ Nenhuma região detectada!")
-                st.info("Tente reduzir 'Área Mínima'")
-                st.stop()
-            
-            # Passo 3: Ordenar
-            regioes_ord = ordenar_por_escurecimento(regioes)
-            
-            # Passo 4: Desenhar
-            img_resultado = desenhar_resultado(img_filme, regioes_ord)
-            df = criar_dataframe(regioes_ord, dpi)
-            
-            # Mostrar resultado
-            with col2:
-                st.subheader(f"Resultado: {len(regioes)} regiões")
-                st.image(img_resultado, use_column_width=True)
-            
-            # Métricas
-            st.markdown("---")
-            st.header("📊 Análise")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Regiões", len(regioes))
-            c2.metric("DPI", dpi)
-            c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
-            c4.metric("Ordenação", "1=Claro → N=Escuro")
-            
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            # Downloads
-            col_d1, col_d2 = st.columns(2)
-            
-            with col_d1:
-                csv = df.to_csv(index=False)
-                st.download_button("📥 Download CSV", csv, 
-                                 f"resultado_{arquivo.name.split('.')[0]}.csv", 
-                                 "text/csv", use_container_width=True)
-            
-            with col_d2:
-                buf = io.BytesIO()
-                img_pil_res = Image.fromarray(img_resultado)
-                img_pil_res.save(buf, format='PNG')
-                st.download_button("📥 Download Imagem", buf.getvalue(),
-                                 f"analisado_{arquivo.name.split('.')[0]}.png",
-                                 "image/png", use_container_width=True)
-else:
-    st.info("👆 Faça upload de uma imagem para começar!")

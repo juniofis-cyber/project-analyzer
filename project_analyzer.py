@@ -4,8 +4,8 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu
-from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
+from skimage.filters import threshold_otsu, sobel
+from skimage.morphology import remove_small_objects, closing, square, erosion, dilation, opening
 from skimage.measure import label, regionprops
 from skimage.segmentation import clear_border
 
@@ -27,17 +27,26 @@ def cortar_filme(imagem):
     h, w = imagem.shape[:2]
     return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)]
 
-def detectar_regioes(imagem, area_min, offset):
+def detectar_regioes(imagem, area_min, offset, fechamento, erosao):
     gray = rgb2gray(imagem)
+    
+    # Usar threshold local para melhor precisão nas bordas
     thresh = threshold_otsu(gray)
     thresh_ajustado = thresh * (1 - offset)
+    
+    # Detectar regiões escuras
     binary = gray < thresh_ajustado
+    
+    # Operações morfológicas para limpar
+    if erosao > 0:
+        binary = erosion(binary, square(erosao))
     binary = remove_small_objects(binary, min_size=area_min)
-    binary = closing(binary, square(5))
-    binary = erosion(binary, square(3))
-    binary = dilation(binary, square(3))
+    if fechamento > 0:
+        binary = closing(binary, square(fechamento))
+    
     labeled = label(binary)
     regions = regionprops(labeled, intensity_image=gray)
+    
     regioes = []
     for r in regions:
         if r.area >= area_min:
@@ -52,7 +61,8 @@ def detectar_regioes(imagem, area_min, offset):
                 'bbox': (minc, minr, w, h),
                 'razao': razao
             })
-    return regioes, thresh, thresh_ajustado
+    
+    return regioes, thresh, thresh_ajustado, binary
 
 def ordenar(regioes):
     ordenadas = sorted(regioes, key=lambda x: x['intensidade'], reverse=True)
@@ -85,8 +95,13 @@ def desenhar(imagem, regioes):
 with st.sidebar:
     st.header("Configuracoes")
     dpi = st.number_input("DPI", 1, 2400, 50)
-    area_min = st.slider("Area Minima", 100, 50000, 3000, 100)
-    offset = st.slider("Sensibilidade", 0.0, 0.5, 0.15, 0.01)
+    area_min = st.slider("Area Minima (pixels)", 100, 50000, 3000, 100)
+    offset = st.slider("Sensibilidade", 0.0, 0.5, 0.15, 0.01, 
+                       help="Maior = detecta mais escuro")
+    fechamento = st.slider("Fechamento", 0, 10, 5, 1,
+                          help="Maior = contornos mais fechados")
+    erosao = st.slider("Erosao", 0, 5, 0, 1,
+                      help="Maior = contornos menores")
 
 st.header("Upload da Imagem")
 arquivo = st.file_uploader("Imagem EBT3", type=['tif','tiff','png','jpg','jpeg'])
@@ -98,7 +113,7 @@ if arquivo:
     img_orig = np.array(img)
     img_norm = img_orig/255.0 if img_orig.max() > 1 else img_orig
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader("Original")
         st.image(img_orig, use_column_width=True)
@@ -111,7 +126,9 @@ if arquivo:
                 st.stop()
             st.info(f"Filme: {img_filme.shape[1]}x{img_filme.shape[0]} px")
             
-            regioes, thresh_orig, thresh_ajust = detectar_regioes(img_filme, area_min, offset)
+            regioes, thresh_orig, thresh_ajust, binary = detectar_regioes(
+                img_filme, area_min, offset, fechamento, erosao)
+            
             st.info(f"Threshold: {thresh_orig:.3f} -> {thresh_ajust:.3f}")
             
             if not regioes:
@@ -124,6 +141,10 @@ if arquivo:
             with col2:
                 st.subheader(f"{len(regioes)} regioes")
                 st.image(img_res, use_column_width=True)
+            
+            with col3:
+                st.subheader("Mascara")
+                st.image((binary * 255).astype(np.uint8), use_column_width=True)
             
             mm = 25.4 / dpi
             df = pd.DataFrame([{

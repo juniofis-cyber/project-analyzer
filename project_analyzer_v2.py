@@ -7,7 +7,7 @@ Usando skimage para detecção mais robusta
 import streamlit as st
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import io
 
 # Importações do Dosepy/OMG

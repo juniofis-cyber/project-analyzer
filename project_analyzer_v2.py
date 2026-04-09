@@ -1,7 +1,6 @@
 """
-Project Analyzer v3.0
-Baseado no código do Dosepy (Luis Olivares)
-https://github.com/LuisOlivaresJ/Dosepy
+Project Analyzer v4.0
+Detecção de regiões irradiadas em filme EBT3
 """
 
 import streamlit as st
@@ -11,13 +10,13 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from skimage.color import rgb2gray
-from skimage.filters import threshold_otsu
+from skimage.filters import threshold_otsu, threshold_local
 from skimage.morphology import erosion, dilation, remove_small_objects, remove_small_holes
-from skimage.morphology import square
+from skimage.morphology import square, disk
 from skimage.measure import label, regionprops
 from skimage.segmentation import clear_border
 
-st.set_page_config(page_title="Project Analyzer v3", page_icon="🔬", layout="wide")
+st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
 st.markdown("""
 <style>
@@ -26,7 +25,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def detectar_fundo_dosepy(imagem):
+def detectar_fundo(imagem):
+    """Detecta e corta o filme da imagem"""
     gray = rgb2gray(imagem)
     thresh = threshold_otsu(gray)
     binary = gray < thresh
@@ -49,32 +49,46 @@ def detectar_fundo_dosepy(imagem):
     maxc = min(w, maxc + margem)
     return imagem[minr:maxr, minc:maxc], (minr, minc, maxr, maxc)
 
-def detectar_regioes_dosepy(imagem, area_min_percent=0.1, thresh_percent=80):
+def detectar_regioes(imagem, area_min_percent=0.5, fator_otsu=0.85):
+    """
+    Detecta regiões irradiadas usando Otsu no filme
+    fator_otsu: multiplicador do threshold Otsu (0.8 = mais sensível, 1.0 = menos)
+    """
     gray = rgb2gray(imagem)
     area_total = imagem.shape[0] * imagem.shape[1]
     area_minima = (area_min_percent / 100) * area_total
-    hist, bin_edges = np.histogram(gray.flatten(), bins=256, range=(0, 1))
-    modo_idx = np.argmax(hist)
-    filme_base = (bin_edges[modo_idx] + bin_edges[modo_idx + 1]) / 2
-    limite = filme_base * (thresh_percent / 100)
-    binary = gray < limite
+    
+    # Usar Otsu diretamente no filme cortado
+    # Isso separa automaticamente: fundo (claro) vs regiões irradiadas (escuras)
+    thresh = threshold_otsu(gray)
+    
+    # Ajustar threshold com fator
+    # fator_otsu < 1.0 = detecta mais coisas (mais sensível)
+    # fator_otsu > 1.0 = detecta menos coisas (mais restritivo)
+    thresh_ajustado = thresh * fator_otsu
+    
+    binary = gray < thresh_ajustado
+    
+    # Limpeza
     binary = remove_small_objects(binary, min_size=int(area_minima))
     binary = remove_small_holes(binary, area_threshold=int(area_minima/2))
-    binary = erosion(binary, square(3))
-    binary = dilation(binary, square(2))
+    binary = erosion(binary, disk(3))
+    binary = dilation(binary, disk(2))
+    
     labeled = label(binary)
     regions = regionprops(labeled, intensity_image=gray)
+    
     regioes = []
-    for i, region in enumerate(regions):
+    for region in regions:
         if region.area < area_minima:
             continue
         regioes.append({
-            'id': i,
             'area': region.area,
             'intensidade_media': region.mean_intensity,
             'centro': (int(region.centroid[1]), int(region.centroid[0])),
             'bbox': region.bbox,
         })
+    
     return regioes
 
 def ordenar_por_escurecimento(regioes):
@@ -120,17 +134,17 @@ def criar_dataframe(regioes, dpi=50):
         })
     return pd.DataFrame(dados)
 
-st.markdown('<p class="main-title">🔬 Project Analyzer v3.0</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Baseado no Dosepy de Luis Olivares</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🔬 Project Analyzer v4.0</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Detecção de Regiões Irradiadas em EBT3</p>', unsafe_allow_html=True)
 st.markdown("---")
 
 with st.sidebar:
     st.header("⚙️ Configurações")
     dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
-    area_min = st.slider("Área Mínima (%)", 0.01, 5.0, 0.5, 0.01, help="Regiões menores são ignoradas como ruído")
-    thresh_percent = st.slider("Threshold (% do filme base)", 50, 99, 80, 1, help="80% = detecta tudo 20% mais escuro que o filme base")
+    area_min = st.slider("Área Mínima (%)", 0.01, 5.0, 0.5, 0.01, help="Regiões menores são ignoradas")
+    fator_otsu = st.slider("Fator Otsu", 0.70, 1.00, 0.85, 0.01, help="0.70 = mais sensível | 1.00 = menos sensível")
     st.markdown("---")
-    st.info("💡 Baseado no Dosepy\\ngithub.com/LuisOlivaresJ/Dosepy")
+    st.info("💡 Dica: Se não detectar todas, reduza o Fator Otsu")
 
 st.header("📁 Upload da Imagem")
 arquivo = st.file_uploader("Selecione a imagem do filme EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
@@ -151,23 +165,28 @@ if arquivo:
         st.image(img_original, use_column_width=True)
     
     if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
-        with st.spinner("Processando com Dosepy..."):
-            img_filme, bbox = detectar_fundo_dosepy(img_normalized)
+        with st.spinner("Processando..."):
+            img_filme, bbox = detectar_fundo(img_normalized)
             if bbox is None:
                 st.error("❌ Não foi possível detectar o filme!")
                 st.stop()
             st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} px")
-            regioes = detectar_regioes_dosepy(img_filme, area_min, thresh_percent)
+            
+            regioes = detectar_regioes(img_filme, area_min, fator_otsu)
+            
             if not regioes:
                 st.warning("⚠️ Nenhuma região detectada!")
-                st.info("Tente reduzir 'Área Mínima' ou aumentar 'Threshold'")
+                st.info("Tente reduzir 'Área Mínima' ou 'Fator Otsu'")
                 st.stop()
+            
             regioes_ord = ordenar_por_escurecimento(regioes)
             img_resultado = desenhar_resultado(img_filme, regioes_ord)
             df = criar_dataframe(regioes_ord, dpi)
+            
             with col2:
                 st.subheader(f"Resultado: {len(regioes)} regiões")
                 st.image(img_resultado, use_column_width=True)
+            
             st.markdown("---")
             st.header("📊 Análise")
             c1, c2, c3, c4 = st.columns(4)
@@ -176,6 +195,7 @@ if arquivo:
             c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
             c4.metric("Ordenação", "1=Claro → N=Escuro")
             st.dataframe(df, use_container_width=True, hide_index=True)
+            
             col_d1, col_d2 = st.columns(2)
             with col_d1:
                 csv = df.to_csv(index=False)

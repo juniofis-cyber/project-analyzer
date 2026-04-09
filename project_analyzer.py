@@ -1,14 +1,14 @@
+"""
+Project Analyzer - Baseado no grain-analysis de José Henrique Roveda
+https://github.com/josehenriqueroveda/grain-analysis
+"""
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
-from skimage.color import rgb2gray
-from skimage.feature import canny
-from skimage.morphology import closing, square, remove_small_objects
-from skimage.measure import label, regionprops
-from skimage.filters import threshold_otsu
-from skimage.segmentation import clear_border
+import cv2
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
@@ -16,179 +16,211 @@ st.title("🔬 Project Analyzer")
 st.markdown("Detecção de regiões irradiadas em filme EBT3")
 
 def detectar_fundo(imagem):
-    """Detecta e corta o filme"""
-    gray = rgb2gray(imagem)
-    thresh = threshold_otsu(gray)
-    binary = gray < thresh
-    binary = clear_border(binary)
-    binary = remove_small_objects(binary, min_size=1000)
-    labeled = label(binary)
-    regions = regionprops(labeled)
-    if not regions:
+    """Detecta e corta o filme da imagem"""
+    gray = cv2.cvtColor(imagem, cv2.COLOR_RGB2GRAY)
+    
+    # Otsu para separar fundo branco do filme
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Encontrar contornos
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
         return imagem, None
-    largest = max(regions, key=lambda r: r.area)
-    minr, minc, maxr, maxc = largest.bbox
+    
+    # Pegar o maior contorno (o filme)
+    largest = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest)
+    
+    # Cortar com margem
     margem = 20
-    h, w = imagem.shape[:2]
-    return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)], True
+    h_img, w_img = imagem.shape[:2]
+    x1 = max(0, x - margem)
+    y1 = max(0, y - margem)
+    x2 = min(w_img, x + w + margem)
+    y2 = min(h_img, y + h + margem)
+    
+    return imagem[y1:y2, x1:x2], (x1, y1, x2, y2)
 
-def detectar_regioes_bordas(imagem, area_min_pct):
-    """Detecta regiões usando detecção de bordas Canny"""
-    gray = rgb2gray(imagem)
-    area_total = imagem.shape[0] * imagem.shape[1]
-    area_minima = (area_min_pct / 100) * area_total
+def detectar_regioes(imagem, area_min_pixels):
+    """
+    Detecta regiões irradiadas usando técnica do grain-analysis
+    """
+    # Converter para grayscale
+    gray = cv2.cvtColor(imagem, cv2.COLOR_RGB2GRAY)
     
-    # Detectar bordas com Canny
-    bordas = canny(gray, sigma=2)
+    # Blur para reduzir ruído
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
     
-    # Fechar bordas para formar regiões
-    bordas_fechadas = closing(bordas, square(5))
+    # Threshold Otsu (inverso - detecta escuro)
+    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Preencher regiões
-    labeled = label(bordas_fechadas)
-    regions = regionprops(labeled, intensity_image=gray)
+    # Encontrar contornos
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Filtrar por área e forma (quadrados/retângulos)
+    # Processar contornos
     regioes = []
-    for r in regions:
-        if r.area < area_minima:
-            continue
-        # Calcular razão de aspecto (quadrados têm razão próxima de 1)
-        minr, minc, maxr, maxc = r.bbox
-        altura = maxr - minr
-        largura = maxc - minc
-        if altura > 0 and largura > 0:
-            razao = min(altura, largura) / max(altura, largura)
-            # Aceitar razões entre 0.5 e 1.0 (quadrados a retângulos)
-            if razao >= 0.5:
-                regioes.append({
-                    'area': r.area,
-                    'intensidade_media': r.mean_intensity,
-                    'centro': (int(r.centroid[1]), int(r.centroid[0])),
-                    'bbox': r.bbox,
-                    'razao': razao
-                })
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > area_min_pixels:
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Calcular intensidade média da região
+            mask = np.zeros(gray.shape, dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            intensidade = cv2.mean(gray, mask=mask)[0]
+            
+            # Centro
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+            else:
+                cx, cy = x + w//2, y + h//2
+            
+            regioes.append({
+                'area': area,
+                'intensidade_media': intensidade,
+                'centro': (cx, cy),
+                'bbox': (x, y, w, h),
+                'contorno': contour
+            })
     
     return regioes
 
-def detectar_regioes_otsu_local(imagem, area_min_pct, fator_escuro):
-    """Detecta regiões mais escuras que o filme base"""
-    gray = rgb2gray(imagem)
-    area_total = imagem.shape[0] * imagem.shape[1]
-    area_minima = (area_min_pct / 100) * area_total
-    
-    # Calcular histograma para encontrar o pico (filme base)
-    hist, bins = np.histogram(gray.flatten(), bins=256, range=(0, 1))
-    pico_idx = np.argmax(hist)
-    pico_valor = (bins[pico_idx] + bins[pico_idx + 1]) / 2
-    
-    # Detectar tudo que é significativamente mais escuro que o pico
-    limite = pico_valor * (1 - fator_escuro)
-    binary = gray < limite
-    
-    # Limpeza
-    binary = remove_small_objects(binary, min_size=int(area_minima))
-    binary = closing(binary, square(5))
-    
-    labeled = label(binary)
-    regions = regionprops(labeled, intensity_image=gray)
-    
-    regioes = []
-    for r in regions:
-        if r.area < area_minima:
-            continue
-        minr, minc, maxr, maxc = r.bbox
-        altura = maxr - minr
-        largura = maxc - minc
-        if altura > 0 and largura > 0:
-            razao = min(altura, largura) / max(altura, largura)
-            if razao >= 0.4:  # Um pouco mais flexível
-                regioes.append({
-                    'area': r.area,
-                    'intensidade_media': r.mean_intensity,
-                    'centro': (int(r.centroid[1]), int(r.centroid[0])),
-                    'bbox': r.bbox,
-                    'razao': razao
-                })
-    
-    return regioes, pico_valor, limite
-
-def ordenar(regioes):
+def ordenar_por_escurecimento(regioes):
+    """Ordena do mais claro (maior intensidade) para o mais escuro"""
     ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'], reverse=True)
     for i, r in enumerate(ordenadas, 1):
         r['id_ordenado'] = i
     return ordenadas
 
-def desenhar(imagem, regioes):
-    img = Image.fromarray((imagem * 255).astype(np.uint8) if imagem.max() <= 1 else imagem.astype(np.uint8))
-    draw = ImageDraw.Draw(img)
-    try:
-        fonte = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
-    except:
-        fonte = ImageFont.load_default()
+def desenhar_resultado(imagem, regioes):
+    """Desenha contornos e numeração"""
+    img = imagem.copy()
+    
     for r in regioes:
-        minr, minc, maxr, maxc = r['bbox']
-        draw.rectangle([minc, minr, maxc, maxr], outline=(0, 255, 0), width=3)
+        x, y, w, h = r['bbox']
+        
+        # Contorno verde
+        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+        
+        # Número
         cx, cy = r['centro']
-        bbox = draw.textbbox((0, 0), str(r['id_ordenado']), font=fonte)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.rectangle([cx-tw//2-4, cy-th//2-4, cx+tw//2+4, cy+th//2+4], fill=(0, 0, 0))
-        draw.text((cx-tw//2, cy-th//2), str(r['id_ordenado']), fill=(255, 255, 255), font=fonte)
-    return np.array(img)
+        numero = str(r['id_ordenado'])
+        
+        # Fundo preto
+        (tw, th), _ = cv2.getTextSize(numero, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        cv2.rectangle(img, (cx - tw//2 - 5, cy - th//2 - 5), 
+                     (cx + tw//2 + 5, cy + th//2 + 5), (0, 0, 0), -1)
+        
+        # Texto branco
+        cv2.putText(img, numero, (cx - tw//2, cy + th//2), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    return img
 
-def criar_df(regioes, dpi):
-    mm = 25.4 / dpi
-    return pd.DataFrame([{'Número': r['id_ordenado'], 'Área (mm²)': round(r['area']*mm**2, 2), 'Intensidade': round(r['intensidade_media'], 4), 'Razão': round(r.get('razao', 0), 2)} for r in regioes])
+def criar_dataframe(regioes, dpi):
+    """Cria DataFrame com dados"""
+    mm_por_pixel = 25.4 / dpi
+    dados = []
+    for r in regioes:
+        area_mm2 = r['area'] * (mm_por_pixel ** 2)
+        dados.append({
+            'Número': r['id_ordenado'],
+            'Área (mm²)': round(area_mm2, 2),
+            'Área (pixels)': int(r['area']),
+            'Intensidade Média': round(r['intensidade_media'], 2),
+            'Centro X': r['centro'][0],
+            'Centro Y': r['centro'][1]
+        })
+    return pd.DataFrame(dados)
 
+# Interface
 with st.sidebar:
-    st.header("Configurações")
-    dpi = st.number_input("DPI", 1, 2400, 50)
-    area_min = st.slider("Área Mínima (%)", 0.01, 10.0, 5.0, 0.1, help="Aumente se detectar áreas muito pequenas")
-    fator_escuro = st.slider("Fator de Escurecimento", 0.01, 0.30, 0.08, 0.01, help="0.08 = detecta 8% mais escuro que o filme base")
-    metodo = st.selectbox("Método", ["Otsu Local", "Bordas Canny"])
+    st.header("⚙️ Configurações")
+    dpi = st.number_input("DPI do Scanner", 1, 2400, 50)
+    area_min = st.slider("Área Mínima (pixels)", 100, 10000, 1000, 100, 
+                        help="Aumente se detectar ruídos pequenos")
+    st.markdown("---")
+    st.info("💡 Baseado em grain-analysis\ngithub.com/josehenriqueroveda/grain-analysis")
 
-arquivo = st.file_uploader("Upload da imagem EBT3", type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
+st.header("📁 Upload da Imagem")
+arquivo = st.file_uploader("Selecione a imagem do filme EBT3", 
+                          type=['tif', 'tiff', 'png', 'jpg', 'jpeg'])
 
 if arquivo:
-    img = Image.open(io.BytesIO(arquivo.read()))
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    img_orig = np.array(img)
-    img_norm = img_orig / 255.0 if img_orig.max() > 1 else img_orig
+    # Ler imagem
+    img_pil = Image.open(io.BytesIO(arquivo.read()))
+    if img_pil.mode != 'RGB':
+        img_pil = img_pil.convert('RGB')
+    img_original = np.array(img_pil)
     
     col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Original")
-        st.image(img_orig, use_column_width=True)
     
-    if st.button("ANALISAR", type="primary"):
+    with col1:
+        st.subheader("Imagem Original")
+        st.image(img_original, use_column_width=True)
+    
+    if st.button("🔍 ANALISAR", type="primary", use_container_width=True):
         with st.spinner("Processando..."):
-            img_filme, ok = detectar_fundo(img_norm)
-            if not ok:
-                st.error("Filme não detectado!")
+            
+            # Passo 1: Detectar filme
+            img_filme, bbox = detectar_fundo(img_original)
+            
+            if bbox is None:
+                st.error("❌ Não foi possível detectar o filme!")
                 st.stop()
             
-            if metodo == "Otsu Local":
-                regioes, pico, limite = detectar_regioes_otsu_local(img_filme, area_min, fator_escuro)
-                st.info(f"Filme base: {pico:.3f} | Limite: {limite:.3f}")
-            else:
-                regioes = detectar_regioes_bordas(img_filme, area_min)
+            st.info(f"✅ Filme detectado: {img_filme.shape[1]}x{img_filme.shape[0]} pixels")
+            
+            # Passo 2: Detectar regiões
+            regioes = detectar_regioes(img_filme, area_min)
             
             if not regioes:
-                st.warning("Nenhuma região! Aumente 'Área Mínima' ou 'Fator de Escurecimento'")
+                st.warning("⚠️ Nenhuma região detectada!")
+                st.info("Tente reduzir 'Área Mínima'")
                 st.stop()
             
-            reg_ord = ordenar(regioes)
-            img_res = desenhar(img_filme, reg_ord)
-            df = criar_df(reg_ord, dpi)
+            # Passo 3: Ordenar
+            regioes_ord = ordenar_por_escurecimento(regioes)
             
+            # Passo 4: Desenhar
+            img_resultado = desenhar_resultado(img_filme, regioes_ord)
+            df = criar_dataframe(regioes_ord, dpi)
+            
+            # Mostrar resultado
             with col2:
-                st.subheader(f"{len(regioes)} regiões")
-                st.image(img_res, use_column_width=True)
+                st.subheader(f"Resultado: {len(regioes)} regiões")
+                st.image(img_resultado, use_column_width=True)
             
-            st.dataframe(df, use_container_width=True)
+            # Métricas
+            st.markdown("---")
+            st.header("📊 Análise")
             
-            csv = df.to_csv(index=False)
-            st.download_button("Download CSV", csv, "resultado.csv", "text/csv")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Regiões", len(regioes))
+            c2.metric("DPI", dpi)
+            c3.metric("Resolução", f"{25.4/dpi:.2f} mm/px")
+            c4.metric("Ordenação", "1=Claro → N=Escuro")
+            
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Downloads
+            col_d1, col_d2 = st.columns(2)
+            
+            with col_d1:
+                csv = df.to_csv(index=False)
+                st.download_button("📥 Download CSV", csv, 
+                                 f"resultado_{arquivo.name.split('.')[0]}.csv", 
+                                 "text/csv", use_container_width=True)
+            
+            with col_d2:
+                buf = io.BytesIO()
+                img_pil_res = Image.fromarray(img_resultado)
+                img_pil_res.save(buf, format='PNG')
+                st.download_button("📥 Download Imagem", buf.getvalue(),
+                                 f"analisado_{arquivo.name.split('.')[0]}.png",
+                                 "image/png", use_container_width=True)
 else:
-    st.info("Faça upload de uma imagem")
+    st.info("👆 Faça upload de uma imagem para começar!")

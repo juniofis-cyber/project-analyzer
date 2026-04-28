@@ -383,7 +383,7 @@ else:
             # Mostrar imagens originais com deteccao
             st.subheader("Imagens Originais com Deteccao")
             for img_info in imagens_originais:
-                col_orig, col_masc = st.columns(2)
+                col_orig, col_masc = st.columns([3, 2])
                 with col_orig:
                     st.markdown(f"**{img_info['nome']}** - Original com marcacoes")
                     st.image(img_info['imagem'], use_column_width=True)
@@ -396,7 +396,7 @@ else:
             
             # Grid com filmes individuais e marcacoes
             st.subheader("Filmes Individuais com Recuo e ROI")
-            cols_por_linha = 4
+            cols_por_linha = 3
             for i in range(0, len(todos_filmes), cols_por_linha):
                 cols = st.columns(cols_por_linha)
                 for j, col in enumerate(cols):

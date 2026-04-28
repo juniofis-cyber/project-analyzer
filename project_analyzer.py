@@ -246,6 +246,8 @@ def carregar_imagem_preservando_bits(arquivo):
         info['max_val'] = float(img_array.max())
     
     return img_array, info
+
+def ajustar_bbox(bbox, encolher, expandir):
     x, y, w, h = bbox
     if encolher > 0:
         x += encolher; y += encolher; w -= 2 * encolher; h -= 2 * encolher
@@ -257,18 +259,56 @@ def carregar_imagem_preservando_bits(arquivo):
 # ==================== FUNCOES DE CALIBRACAO ====================
 
 def calcular_nod(filmes_calibracao):
-    """Calcula NOD: NOD = log10(PV0 / PVirradiado)"""
-    filme_0 = max(filmes_calibracao, key=lambda f: f['filme']['intensidade_roi'])
-    pv0 = filme_0['filme']['intensidade_roi']
+    """
+    Calcula NOD corretamente considerando a direcao do scanner.
+    
+    EBT3/EBT4: NOD = log10(PV0 / PVirradiado) para transmissao padrao
+    Se scanner inverte (ADC cresce com dose): NOD = log10(PVirradiado / PV0)
+    
+    Usa o filme de dose=0 como PV0, nao adivinha por max/min.
+    """
+    # Encontrar filme de 0 Gy (menor dose)
+    filmes_ordenados_por_dose = sorted(filmes_calibracao, key=lambda f: f['dose'])
+    filme_0 = filmes_ordenados_por_dose[0]
+    pv0 = float(filme_0['filme']['intensidade_roi'])
+    dose_0 = float(filme_0['dose'])
+    
+    # Encontrar filme de maior dose
+    filme_max = filmes_ordenados_por_dose[-1]
+    pv_max = float(filme_max['filme']['intensidade_roi'])
+    dose_max = float(filme_max['dose'])
+    
+    # Detectar direcao: ADC aumenta ou diminui com dose?
+    adc_aumenta_com_dose = pv_max > pv0
+    
+    info = {
+        'pv0': pv0,
+        'dose_0': dose_0,
+        'pv_max': pv_max,
+        'dose_max': dose_max,
+        'adc_aumenta_com_dose': adc_aumenta_com_dose
+    }
     
     for f in filmes_calibracao:
-        pv_irrad = f['filme']['intensidade_roi']
-        if pv_irrad > 0 and pv0 > pv_irrad:
-            f['nod'] = np.log10(pv0 / pv_irrad)
-        else:
+        pv_irrad = float(f['filme']['intensidade_roi'])
+        
+        if pv0 <= 0 or pv_irrad <= 0:
             f['nod'] = 0.0
+            f['nod_info'] = 'Erro: PV <= 0'
+            continue
+            
+        if adc_aumenta_com_dose:
+            # Scanner tipo IBA: escuro = maior valor (refletancia/invertido)
+            # NOD = log10(PVirradiado / PV0)
+            f['nod'] = float(np.log10(pv_irrad / pv0))
+            f['nod_info'] = f'log10({pv_irrad:.1f}/{pv0:.1f}) = {f["nod"]:.4f}'
+        else:
+            # Scanner de transmissao padrao: escuro = menor valor
+            # NOD = log10(PV0 / PVirradiado)
+            f['nod'] = float(np.log10(pv0 / pv_irrad))
+            f['nod_info'] = f'log10({pv0:.1f}/{pv_irrad:.1f}) = {f["nod"]:.4f}'
     
-    return pv0
+    return pv0, info
 
 def fitting_polinomial2(nods, doses):
     """Fitting: Dose = a*NOD^2 + b*NOD + c"""
@@ -373,13 +413,16 @@ def gerar_grafico_adc_dose(filmes, tipo_filme):
     ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
     ax.set_title(f'Curva de Calibração {tipo_filme} - ADC vs Dose\nR² = {r2_adc:.6f}', 
                  fontsize=13, fontweight='bold')
-    ax.legend(fontsize=12, loc='upper right')
+    ax.legend(fontsize=12, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.axhline(y=0, color='k', linewidth=0.5)
     ax.set_ylim(bottom=0)
     
-    # Inverter eixo X (ADC diminui com dose)
-    ax.invert_xaxis()
+    # Inverter eixo X apenas se ADC diminui com dose (transmissao padrao)
+    # Se ADC aumenta com dose, deixar eixo normal
+    if len(adcs) >= 2 and doses[-1] > doses[0]:
+        if adcs[-1] < adcs[0]:
+            ax.invert_xaxis()
     
     plt.tight_layout()
     
@@ -658,6 +701,8 @@ else:
             st.markdown("---")
             st.header("📊 Curva de Calibração")
             
+            st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos (ADC na faixa de 0-255 em vez de 10.000-60.000).")
+            
             st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
             st.info(f"Total de filmes disponíveis: {len(todos_filmes)}")
             st.warning("⚠️ Selecione pelo menos 3 filmes de calibração com doses conhecidas")
@@ -698,13 +743,56 @@ else:
                         for f in filmes_calibracao:
                             f['dose'] = f['dose'] / 100.0
                     
+                    # ========== VALIDACOES DE SANIDADE ==========
+                    adcs_raw = [f['filme']['intensidade_roi'] for f in filmes_calibracao]
+                    max_adc = max(adcs_raw)
+                    min_adc = min(adcs_raw)
+                    
+                    # Alerta: imagem parece ser 8-bit ou muito baixa
+                    if max_adc < 300:
+                        st.error(f"🚨 **VALORES DE ADC MUITO BAIXOS (max={max_adc:.1f})**")
+                        st.error("Os scans parecem estar em 8-bit (0-255). Filmes EBT3/EBT4 escaneados profissionalmente devem ter ADC na faixa de 10.000–60.000 (16-bit).")
+                        st.info("**Possíveis causas:**\n1. Você carregou screenshots/prints em vez dos arquivos TIF originais do scanner\n2. As imagens foram salvas como JPG/PNG de 8-bit e perderam a precisão do scanner\n3. O scanner não está configurado para 16-bit / 48-bit color")
+                        st.warning("⚠️ A curva será gerada, mas NÃO será confiável para dosimetria clínica.")
+                    
+                    # Alerta: filme 0 Gy com ADC = 0
+                    doses_list = [f['dose'] for f in filmes_calibracao]
+                    if 0.0 in doses_list:
+                        idx_0 = doses_list.index(0.0)
+                        adc_0 = adcs_raw[idx_0]
+                        if adc_0 < 1:
+                            st.error(f"🚨 O filme de 0 Gy tem ADC = {adc_0:.1f} (quase zero). Isso indica que a imagem está escura demais ou é um print, não o scan original.")
+                    
                     # Calcular NOD para TODOS os filmes
-                    pv0 = calcular_nod(filmes_calibracao)
+                    pv0, nod_info = calcular_nod(filmes_calibracao)
                     nods = np.array([f['nod'] for f in filmes_calibracao])
                     doses = np.array([f['dose'] for f in filmes_calibracao])
                     adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
                     
-                    st.info(f"PV do filme 0 Gy (referência): {pv0:.4f}")
+                    # Info do calculo
+                    st.info(f"**Referência 0 Gy:** ADC = {pv0:.1f} | Dose = {nod_info['dose_0']:.2f} Gy")
+                    st.info(f"**Maior dose:** ADC = {nod_info['pv_max']:.1f} | Dose = {nod_info['dose_max']:.2f} Gy")
+                    
+                    if nod_info['adc_aumenta_com_dose']:
+                        st.success("✅ Scanner detectado: ADC **aumenta** com dose (tipo IBA/refletância). NOD = log10(PV/PV₀)")
+                    else:
+                        st.success("✅ Scanner detectado: ADC **diminui** com dose (transmissão padrão). NOD = log10(PV₀/PV)")
+                    
+                    # Mostrar tabela de NODs para debug
+                    debug_nods = pd.DataFrame([{
+                        'Filme': f['id'],
+                        'Dose_Gy': f['dose'],
+                        'ADC': f['filme']['intensidade_roi'],
+                        'NOD': f['nod'],
+                        'Forma': f.get('nod_info', '')
+                    } for f in filmes_calibracao])
+                    st.subheader("Debug — Cálculo de NOD")
+                    st.dataframe(debug_nods, use_container_width=True, hide_index=True)
+                    
+                    # Verificar se NODs são monotonicos crescentes
+                    for i in range(1, len(filmes_calibracao)):
+                        if nods[i] < nods[i-1] and doses[i] > doses[i-1]:
+                            st.warning(f"⚠️ NOD do filme {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < filme anterior ({nods[i-1]:.4f}) apesar de dose maior. Verifique os scans.")
                     
                     # Escolher fitting conforme tipo de filme
                     if tipo_filme == "EBT3":

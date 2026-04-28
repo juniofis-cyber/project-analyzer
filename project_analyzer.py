@@ -158,7 +158,7 @@ def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar
     return np.array(img_pil)
 
 def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
-    """Desenha recuo e ROI na imagem INDIVIDUAL do filme cortado"""
+    """Desenha contorno verde, recuo vermelho tracejado e ROI azul na imagem INDIVIDUAL do filme"""
     if imagem_filme.max() <= 1:
         img = (imagem_filme * 255).astype(np.uint8)
     else:
@@ -168,7 +168,10 @@ def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
     draw = ImageDraw.Draw(img_pil)
     h, w = img.shape[:2]
     
-    # Recuo 5mm (VERMELHO TRACEJADO FINO)
+    # 1. CONTORNO DO FILME (VERDE)
+    draw.rectangle([0, 0, w-1, h-1], outline=(0, 255, 0), width=2)
+    
+    # 2. Recuo 5mm (VERMELHO TRACEJADO FINO)
     if recuo_px > 0:
         x_recuo = recuo_px
         y_recuo = recuo_px
@@ -177,7 +180,7 @@ def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
         if w_recuo > 0 and h_recuo > 0:
             desenhar_tracejado_fino(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 1)
     
-    # ROI (AZUL)
+    # 3. ROI (AZUL)
     if roi_bbox:
         rx, ry, rw, rh = roi_bbox
         draw.rectangle([rx, ry, rx + rw, ry + rh], outline=(0, 102, 255), width=2)
@@ -383,7 +386,7 @@ else:
             # Mostrar imagens originais com deteccao
             st.subheader("Imagens Originais com Deteccao")
             for img_info in imagens_originais:
-                col_orig, col_masc = st.columns([3, 2])
+                col_orig, col_masc = st.columns([4, 1])
                 with col_orig:
                     st.markdown(f"**{img_info['nome']}** - Original com marcacoes")
                     st.image(img_info['imagem'], use_column_width=True)
@@ -394,9 +397,27 @@ else:
             
             st.markdown("---")
             
+            # Legenda das cores
+            st.markdown("""
+            <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+                <div style="display: flex; align-items: center;">
+                    <div style="width: 20px; height: 20px; border: 2px solid #00FF00; margin-right: 8px;"></div>
+                    <span>Contorno do filme (verde)</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <div style="width: 20px; height: 20px; border: 1px dashed #FF0000; margin-right: 8px;"></div>
+                    <span>Recuo 5mm AAPM TG-55 (vermelho tracejado)</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <div style="width: 20px; height: 20px; border: 2px solid #0066FF; margin-right: 8px;"></div>
+                    <span>ROI centralizado 60% (azul)</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
             # Grid com filmes individuais e marcacoes
             st.subheader("Filmes Individuais com Recuo e ROI")
-            cols_por_linha = 3
+            cols_por_linha = 5
             for i in range(0, len(todos_filmes), cols_por_linha):
                 cols = st.columns(cols_por_linha)
                 for j, col in enumerate(cols):

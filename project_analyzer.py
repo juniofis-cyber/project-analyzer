@@ -4,8 +4,6 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 import json
-
-# Configurar matplotlib para Streamlit Cloud
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -210,33 +208,32 @@ def ajustar_bbox(bbox, encolher, expandir):
 
 # ==================== FUNCOES DE CALIBRACAO ====================
 
-def calcular_nod_ebt3(filmes_calibracao):
-    """Calcula NOD para EBT3: NOD = log10(PV0 / PVirradiado)"""
-    # Encontrar filme 0 Gy (menor intensidade = mais claro)
-    filme_0 = min(filmes_calibracao, key=lambda f: f['filme']['intensidade_roi'])
+def calcular_nod(filmes_calibracao):
+    """Calcula NOD para qualquer filme: NOD = log10(PV0 / PVirradiado)
+    
+    NOD (Net Optical Density) e o padrao cientifico universal:
+    - Filme claro (0 Gy): PV alto -> NOD baixo
+    - Filme escuro (dose alta): PV baixo -> NOD alto
+    - A curva Dose vs NOD e CRESCENTE (dose aumenta com NOD)
+    """
+    # Encontrar filme 0 Gy (mais claro = maior intensidade = maior PV)
+    filme_0 = max(filmes_calibracao, key=lambda f: f['filme']['intensidade_roi'])
     pv0 = filme_0['filme']['intensidade_roi']
     
     for f in filmes_calibracao:
         pv_irrad = f['filme']['intensidade_roi']
-        if pv_irrad > 0:
+        if pv_irrad > 0 and pv0 > pv_irrad:
             f['nod'] = np.log10(pv0 / pv_irrad)
         else:
             f['nod'] = 0.0
     
     return pv0
 
-def calcular_pvred_ebt4(filmes_calibracao):
-    """Para EBT4, usa PVred direto (ja e o canal vermelho do ROI)"""
-    for f in filmes_calibracao:
-        f['pvred'] = f['filme']['intensidade_roi']
-
-def fitting_ebt3_polinomial2(nods, doses):
-    """Fitting polinomial 2a ordem para EBT3: Dose = a*NOD^2 + b*NOD + c"""
+def fitting_polinomial2(nods, doses):
+    """Fitting polinomial 2a ordem: Dose = a*NOD^2 + b*NOD + c"""
     coefs = np.polyfit(nods, doses, 2)
-    # coefs = [a, b, c] onde Dose = a*x^2 + b*x + c
     a, b, c = coefs
     
-    # Calcular R2
     doses_pred = a * nods**2 + b * nods + c
     ss_res = np.sum((doses - doses_pred)**2)
     ss_tot = np.sum((doses - np.mean(doses))**2)
@@ -244,74 +241,72 @@ def fitting_ebt3_polinomial2(nods, doses):
     
     return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = {a:.4f}*NOD² + {b:.4f}*NOD + {c:.4f}"}
 
-def fitting_ebt4_potencia(pvreds, doses):
-    """Fitting funcao potencia para EBT4: Dose = K1 * PVred^K2"""
+def fitting_potencia(nods, doses):
+    """Fitting funcao potencia: Dose = K1 * NOD^K2"""
     from scipy.optimize import curve_fit
     
     def func_potencia(x, K1, K2):
         return K1 * (x ** K2)
     
     try:
-        popt, _ = curve_fit(func_potencia, pvreds, doses, p0=[1e-6, 2.5])
+        popt, _ = curve_fit(func_potencia, nods, doses, p0=[1.0, 2.0])
         K1, K2 = popt
         
-        # Calcular R2
-        doses_pred = K1 * (pvreds ** K2)
+        doses_pred = K1 * (nods ** K2)
         ss_res = np.sum((doses - doses_pred)**2)
         ss_tot = np.sum((doses - np.mean(doses))**2)
         r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
         
-        return {'K1': K1, 'K2': K2, 'r2': r2, 'equation': f"Dose = {K1:.6f} * PVred^{K2:.4f}"}
+        return {'K1': K1, 'K2': K2, 'r2': r2, 'equation': f"Dose = {K1:.4f} * NOD^{K2:.4f}"}
     except Exception as e:
         st.error(f"Erro no fitting: {e}")
         return None
 
-def gerar_grafico_calibracao_ebt3(filmes, curva):
-    """Gera grafico NOD vs Dose para EBT3"""
+def gerar_grafico_calibracao(filmes, curva, tipo_filme):
+    """Gera grafico NOD vs Dose (padrao cientifico - curva crescente)"""
     nods = np.array([f['nod'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(nods, doses, color='red', s=100, label='Dados medidos', zorder=5)
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.scatter(nods, doses, color='red', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
     
     # Curva fitted
-    nods_fit = np.linspace(min(nods)*0.8, max(nods)*1.2, 100)
-    doses_fit = curva['a'] * nods_fit**2 + curva['b'] * nods_fit + curva['c']
-    ax.plot(nods_fit, doses_fit, 'b-', linewidth=2, label='Curva ajustada')
+    nods_fit = np.linspace(0, max(nods)*1.15, 200)
     
-    ax.set_xlabel('NOD (Net Optical Density)', fontsize=12)
-    ax.set_ylabel('Dose (Gy)', fontsize=12)
-    ax.set_title(f'Curva de Calibração EBT3\n{curva["equation"]}\nR² = {curva["r2"]:.4f}', fontsize=11)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    if 'a' in curva:
+        # Polinomial
+        doses_fit = curva['a'] * nods_fit**2 + curva['b'] * nods_fit + curva['c']
+    else:
+        # Potencia
+        doses_fit = curva['K1'] * (nods_fit ** curva['K2'])
     
-    # Salvar em buffer para Streamlit
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-    buf.seek(0)
-    plt.close(fig)
-    return buf
-
-def gerar_grafico_calibracao_ebt4(filmes, curva):
-    """Gera grafico PVred vs Dose para EBT4"""
-    pvreds = np.array([f['pvred'] for f in filmes])
-    doses = np.array([f['dose'] for f in filmes])
+    ax.plot(nods_fit, doses_fit, 'b-', linewidth=2.5, label='Curva ajustada', zorder=3)
     
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(pvreds, doses, color='red', s=100, label='Dados medidos', zorder=5)
+    # Linhas dos pontos ate a curva
+    for i in range(len(nods)):
+        if 'a' in curva:
+            dose_na_curva = curva['a'] * nods[i]**2 + curva['b'] * nods[i] + curva['c']
+        else:
+            dose_na_curva = curva['K1'] * (nods[i] ** curva['K2'])
+        ax.plot([nods[i], nods[i]], [doses[i], dose_na_curva], 'g--', alpha=0.5, linewidth=1)
     
-    # Curva fitted
-    pv_fit = np.linspace(min(pvreds)*0.8, max(pvreds)*1.2, 100)
-    doses_fit = curva['K1'] * (pv_fit ** curva['K2'])
-    ax.plot(pv_fit, doses_fit, 'b-', linewidth=2, label='Curva ajustada')
+    ax.set_xlabel('NOD (Net Optical Density)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Curva de Calibração {tipo_filme}\n{curva["equation"]}\nR² = {curva["r2"]:.6f}', 
+                 fontsize=13, fontweight='bold')
+    ax.legend(fontsize=12, loc='upper left')
+    ax.grid(True, alpha=0.3, linestyle='--')
     
-    ax.set_xlabel('PVred (Pixel Value - Canal Vermelho)', fontsize=12)
-    ax.set_ylabel('Dose (Gy)', fontsize=12)
-    ax.set_title(f'Curva de Calibração EBT4\n{curva["equation"]}\nR² = {curva["r2"]:.4f}', fontsize=11)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # Destacar origem
+    ax.axhline(y=0, color='k', linewidth=0.5)
+    ax.axvline(x=0, color='k', linewidth=0.5)
     
-    # Salvar em buffer para Streamlit
+    # Ajustar limites para mostrar curva crescente claramente
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    
+    plt.tight_layout()
+    
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
     buf.seek(0)
@@ -320,8 +315,8 @@ def gerar_grafico_calibracao_ebt4(filmes, curva):
 
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v8.0")
-st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60%) | Curva de Calibração")
+st.title("🔬 Project Analyzer v8.1")
+st.markdown("NOD (Net Optical Density) | Curva crescente padrao cientifico")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -342,7 +337,6 @@ with st.sidebar:
         mostrar_recuo = st.checkbox("Mostrar recuo 5mm", value=True)
         mostrar_roi = st.checkbox("Mostrar ROI", value=True)
         
-        # Curva salva
         st.markdown("---")
         st.subheader("Curva de Calibração")
         if 'curva_calibracao' in st.session_state:
@@ -352,7 +346,6 @@ with st.sidebar:
         else:
             st.warning("Nenhuma curva salva")
         
-        # Upload de curva existente
         curva_upload = st.file_uploader("Carregar curva salva (.json)", type=['json'], key="curva_upload")
         if curva_upload:
             try:
@@ -577,7 +570,6 @@ else:
             # Selecionar filmes para calibração
             st.subheader("Selecione os filmes de calibração e informe as doses")
             
-            # Criar colunas para os filmes
             filmes_calibracao = []
             
             for i, filme in enumerate(todos_filmes):
@@ -611,91 +603,67 @@ else:
                         for f in filmes_calibracao:
                             f['dose'] = f['dose'] / 100.0
                     
-                    # Calcular valores conforme tipo de filme
+                    # Calcular NOD para TODOS os filmes (EBT3 e EBT4)
+                    # NOD e o padrao cientifico universal
+                    pv0 = calcular_nod(filmes_calibracao)
+                    nods = np.array([f['nod'] for f in filmes_calibracao])
+                    doses = np.array([f['dose'] for f in filmes_calibracao])
+                    
+                    st.info(f"PV do filme 0 Gy (referência): {pv0:.4f}")
+                    
+                    # Escolher fitting conforme tipo de filme
                     if tipo_filme == "EBT3":
-                        pv0 = calcular_nod_ebt3(filmes_calibracao)
-                        nods = np.array([f['nod'] for f in filmes_calibracao])
-                        doses = np.array([f['dose'] for f in filmes_calibracao])
-                        
-                        curva = fitting_ebt3_polinomial2(nods, doses)
-                        
-                        if curva:
-                            # Salvar resultados no session_state
-                            doses_pred = curva['a'] * nods**2 + curva['b'] * nods + curva['c']
-                            df_erros = pd.DataFrame({
-                                'Filme': [f['id'] for f in filmes_calibracao],
-                                'NOD': nods,
-                                'Dose_Real_Gy': doses,
-                                'Dose_Predita_Gy': doses_pred,
-                                'Erro_Gy': doses_pred - doses,
-                                'Erro_%': ((doses_pred - doses) / doses * 100)
-                            })
-                            
-                            # Gerar grafico
-                            fig_buf = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
-                            
-                            # Salvar na sessao
-                            st.session_state['resultado_curva'] = {
-                                'tipo': 'EBT3',
-                                'equation': curva['equation'],
-                                'r2': float(curva['r2']),
-                                'fig_buf': fig_buf,
-                                'df_erros': df_erros,
-                                'curva_data': {
-                                    'tipo_filme': 'EBT3',
-                                    'equacao': curva['equation'],
-                                    'a': float(curva['a']),
-                                    'b': float(curva['b']),
-                                    'c': float(curva['c']),
-                                    'r2': float(curva['r2']),
-                                    'dpi': dpi_m,
-                                    'unidade': 'Gy',
-                                    'doses_calibracao': doses.tolist(),
-                                    'nods_calibracao': nods.tolist()
-                                }
-                            }
-                            
+                        curva = fitting_polinomial2(nods, doses)
                     else:  # EBT4
-                        calcular_pvred_ebt4(filmes_calibracao)
-                        pvreds = np.array([f['pvred'] for f in filmes_calibracao])
-                        doses = np.array([f['dose'] for f in filmes_calibracao])
+                        curva = fitting_potencia(nods, doses)
+                    
+                    if curva:
+                        # Calcular doses preditas
+                        if 'a' in curva:
+                            doses_pred = curva['a'] * nods**2 + curva['b'] * nods + curva['c']
+                        else:
+                            doses_pred = curva['K1'] * (nods ** curva['K2'])
                         
-                        curva = fitting_ebt4_potencia(pvreds, doses)
+                        df_erros = pd.DataFrame({
+                            'Filme': [f['id'] for f in filmes_calibracao],
+                            'NOD': nods,
+                            'Dose_Real_Gy': doses,
+                            'Dose_Predita_Gy': doses_pred,
+                            'Erro_Gy': doses_pred - doses,
+                            'Erro_%': ((doses_pred - doses) / doses * 100)
+                        })
                         
-                        if curva:
-                            # Salvar resultados no session_state
-                            doses_pred = curva['K1'] * (pvreds ** curva['K2'])
-                            df_erros = pd.DataFrame({
-                                'Filme': [f['id'] for f in filmes_calibracao],
-                                'PVred': pvreds,
-                                'Dose_Real_Gy': doses,
-                                'Dose_Predita_Gy': doses_pred,
-                                'Erro_Gy': doses_pred - doses,
-                                'Erro_%': ((doses_pred - doses) / doses * 100)
-                            })
-                            
-                            # Gerar grafico
-                            fig_buf = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
-                            
-                            # Salvar na sessao
-                            st.session_state['resultado_curva'] = {
-                                'tipo': 'EBT4',
-                                'equation': curva['equation'],
-                                'r2': float(curva['r2']),
-                                'fig_buf': fig_buf,
-                                'df_erros': df_erros,
-                                'curva_data': {
-                                    'tipo_filme': 'EBT4',
-                                    'equacao': curva['equation'],
-                                    'K1': float(curva['K1']),
-                                    'K2': float(curva['K2']),
-                                    'r2': float(curva['r2']),
-                                    'dpi': dpi_m,
-                                    'unidade': 'Gy',
-                                    'doses_calibracao': doses.tolist(),
-                                    'pvreds_calibracao': pvreds.tolist()
-                                }
-                            }
+                        # Gerar grafico
+                        fig_buf = gerar_grafico_calibracao(filmes_calibracao, curva, tipo_filme)
+                        
+                        # Salvar na sessao
+                        curva_data = {
+                            'tipo_filme': tipo_filme,
+                            'equacao': curva['equation'],
+                            'r2': float(curva['r2']),
+                            'dpi': dpi_m,
+                            'unidade': 'Gy',
+                            'pv0_referencia': float(pv0),
+                            'doses_calibracao': doses.tolist(),
+                            'nods_calibracao': nods.tolist()
+                        }
+                        
+                        if 'a' in curva:
+                            curva_data['a'] = float(curva['a'])
+                            curva_data['b'] = float(curva['b'])
+                            curva_data['c'] = float(curva['c'])
+                        else:
+                            curva_data['K1'] = float(curva['K1'])
+                            curva_data['K2'] = float(curva['K2'])
+                        
+                        st.session_state['resultado_curva'] = {
+                            'tipo': tipo_filme,
+                            'equation': curva['equation'],
+                            'r2': float(curva['r2']),
+                            'fig_buf': fig_buf,
+                            'df_erros': df_erros,
+                            'curva_data': curva_data
+                        }
                 
                 st.rerun()
             

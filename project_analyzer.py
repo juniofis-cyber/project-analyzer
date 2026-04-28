@@ -620,18 +620,7 @@ else:
                         curva = fitting_ebt3_polinomial2(nods, doses)
                         
                         if curva:
-                            st.success("✅ Curva de calibração gerada com sucesso!")
-                            
-                            # Mostrar grafico
-                            fig_buf = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
-                            st.image(fig_buf, use_column_width=True)
-                            
-                            # Mostrar equacao
-                            st.info(f"**Equação:** {curva['equation']}")
-                            st.info(f"**R²:** {curva['r2']:.6f}")
-                            
-                            # Tabela de erros
-                            st.subheader("Tabela de Erros")
+                            # Salvar resultados no session_state
                             doses_pred = curva['a'] * nods**2 + curva['b'] * nods + curva['c']
                             df_erros = pd.DataFrame({
                                 'Filme': [f['id'] for f in filmes_calibracao],
@@ -641,20 +630,29 @@ else:
                                 'Erro_Gy': doses_pred - doses,
                                 'Erro_%': ((doses_pred - doses) / doses * 100)
                             })
-                            st.dataframe(df_erros, use_container_width=True, hide_index=True)
                             
-                            # Salvar curva
-                            curva_data = {
-                                'tipo_filme': 'EBT3',
-                                'equacao': curva['equation'],
-                                'a': float(curva['a']),
-                                'b': float(curva['b']),
-                                'c': float(curva['c']),
+                            # Gerar grafico
+                            fig_buf = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
+                            
+                            # Salvar na sessao
+                            st.session_state['resultado_curva'] = {
+                                'tipo': 'EBT3',
+                                'equation': curva['equation'],
                                 'r2': float(curva['r2']),
-                                'dpi': dpi_m,
-                                'unidade': 'Gy',
-                                'doses_calibracao': doses.tolist(),
-                                'nods_calibracao': nods.tolist()
+                                'fig_buf': fig_buf,
+                                'df_erros': df_erros,
+                                'curva_data': {
+                                    'tipo_filme': 'EBT3',
+                                    'equacao': curva['equation'],
+                                    'a': float(curva['a']),
+                                    'b': float(curva['b']),
+                                    'c': float(curva['c']),
+                                    'r2': float(curva['r2']),
+                                    'dpi': dpi_m,
+                                    'unidade': 'Gy',
+                                    'doses_calibracao': doses.tolist(),
+                                    'nods_calibracao': nods.tolist()
+                                }
                             }
                             
                     else:  # EBT4
@@ -665,18 +663,7 @@ else:
                         curva = fitting_ebt4_potencia(pvreds, doses)
                         
                         if curva:
-                            st.success("✅ Curva de calibração gerada com sucesso!")
-                            
-                            # Mostrar grafico
-                            fig_buf = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
-                            st.image(fig_buf, use_column_width=True)
-                            
-                            # Mostrar equacao
-                            st.info(f"**Equação:** {curva['equation']}")
-                            st.info(f"**R²:** {curva['r2']:.6f}")
-                            
-                            # Tabela de erros
-                            st.subheader("Tabela de Erros")
+                            # Salvar resultados no session_state
                             doses_pred = curva['K1'] * (pvreds ** curva['K2'])
                             df_erros = pd.DataFrame({
                                 'Filme': [f['id'] for f in filmes_calibracao],
@@ -686,31 +673,57 @@ else:
                                 'Erro_Gy': doses_pred - doses,
                                 'Erro_%': ((doses_pred - doses) / doses * 100)
                             })
-                            st.dataframe(df_erros, use_container_width=True, hide_index=True)
                             
-                            # Salvar curva
-                            curva_data = {
-                                'tipo_filme': 'EBT4',
-                                'equacao': curva['equation'],
-                                'K1': float(curva['K1']),
-                                'K2': float(curva['K2']),
+                            # Gerar grafico
+                            fig_buf = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
+                            
+                            # Salvar na sessao
+                            st.session_state['resultado_curva'] = {
+                                'tipo': 'EBT4',
+                                'equation': curva['equation'],
                                 'r2': float(curva['r2']),
-                                'dpi': dpi_m,
-                                'unidade': 'Gy',
-                                'doses_calibracao': doses.tolist(),
-                                'pvreds_calibracao': pvreds.tolist()
+                                'fig_buf': fig_buf,
+                                'df_erros': df_erros,
+                                'curva_data': {
+                                    'tipo_filme': 'EBT4',
+                                    'equacao': curva['equation'],
+                                    'K1': float(curva['K1']),
+                                    'K2': float(curva['K2']),
+                                    'r2': float(curva['r2']),
+                                    'dpi': dpi_m,
+                                    'unidade': 'Gy',
+                                    'doses_calibracao': doses.tolist(),
+                                    'pvreds_calibracao': pvreds.tolist()
+                                }
                             }
-                    
-                    # Salvar na sessao
-                    st.session_state['curva_calibracao'] = curva_data
-                    
-                    # Download da curva
-                    curva_json = json.dumps(curva_data, indent=2)
-                    st.download_button(
-                        "💾 Download Curva de Calibração (.json)",
-                        curva_json,
-                        f"curva_calibracao_{tipo_filme}.json",
-                        "application/json"
-                    )
-                    
-                    st.rerun()
+                
+                st.rerun()
+            
+            # Mostrar resultados da curva (FORA do botao, usando session_state)
+            if 'resultado_curva' in st.session_state:
+                resultado = st.session_state['resultado_curva']
+                
+                st.success("✅ Curva de calibração gerada com sucesso!")
+                
+                # Mostrar grafico
+                st.image(resultado['fig_buf'], use_column_width=True)
+                
+                # Mostrar equacao
+                st.info(f"**Equação:** {resultado['equation']}")
+                st.info(f"**R²:** {resultado['r2']:.6f}")
+                
+                # Tabela de erros
+                st.subheader("Tabela de Erros")
+                st.dataframe(resultado['df_erros'], use_container_width=True, hide_index=True)
+                
+                # Salvar curva na sessao permanente
+                st.session_state['curva_calibracao'] = resultado['curva_data']
+                
+                # Download da curva
+                curva_json = json.dumps(resultado['curva_data'], indent=2)
+                st.download_button(
+                    "💾 Download Curva de Calibração (.json)",
+                    curva_json,
+                    f"curva_calibracao_{tipo_filme}.json",
+                    "application/json"
+                )

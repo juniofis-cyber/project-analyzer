@@ -400,7 +400,7 @@ if metodologia == "Um unico filme":
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original")
-            st.image(img_orig, use_column_width=True)
+            st.image(img_orig, use_container_width=True)
         
         if st.button("ANALISAR", type="primary", key="btn_unico"):
             with st.spinner("Processando..."):
@@ -440,7 +440,7 @@ if metodologia == "Um unico filme":
             reg_ord = ordenar(regioes_ajust)
             img_res = desenhar_marcacoes_original(img_filme, reg_ord, dpi_s)
             st.subheader("Resultado Final")
-            st.image(img_res, use_column_width=True)
+            st.image(img_res, use_container_width=True)
             cm = 1 / (dpi_s / 2.54)
             df = pd.DataFrame([{
                 'Filme': r['id'], 'Area_cm2': round(r['area'] * cm * cm, 2),
@@ -448,7 +448,7 @@ if metodologia == "Um unico filme":
                 'Altura_cm': round(r['bbox'][3] * cm, 2),
                 'Intensidade': round(r['intensidade'], 4), 'Razao': round(r['razao'], 2)
             } for r in reg_ord])
-            st.dataframe(df, use_column_width=True, hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
 
 # ==================== MODO VARIOS FILMES ====================
@@ -525,10 +525,10 @@ else:
                 col_orig, col_masc = st.columns([3, 1])
                 with col_orig:
                     st.markdown(f"**{img_info['nome']}** - Original com marcacoes")
-                    st.image(img_info['imagem'], use_column_width=True)
+                    st.image(img_info['imagem'], use_container_width=True)
                 with col_masc:
                     st.markdown("**Mascara de deteccao**")
-                    st.image((img_info['mascara'] * 255).astype(np.uint8), use_column_width=True)
+                    st.image((img_info['mascara'] * 255).astype(np.uint8), use_container_width=True)
                 st.info(f"{len(img_info['filmes'])} filme(s) nesta imagem")
             
             st.markdown("---")
@@ -565,7 +565,7 @@ else:
                         )
                         with col:
                             st.markdown(f"**Filme {filme['id']}**")
-                            st.image(img_com_marcas, use_column_width=True)
+                            st.image(img_com_marcas, use_container_width=True)
                             st.caption(f"ROI: {filme['roi_cm']:.1f} cm | Int ROI: {filme['intensidade_roi']:.4f}")
             
             # Tabela completa
@@ -656,20 +656,25 @@ else:
                         erros_gy = doses_pred - doses
                         erros_pct = []
                         for i in range(len(doses)):
-                            if doses[i] > 0:
-                                erros_pct.append((doses_pred[i] - doses[i]) / doses[i] * 100)
+                            if doses[i] > 0.001:
+                                erros_pct.append(float(abs((doses_pred[i] - doses[i]) / doses[i] * 100)))
                             else:
-                                erros_pct.append(0.0)  # Dose 0 Gy = erro 0%
+                                erros_pct.append(0.0)  # Dose ~0 Gy = erro 0%
                         
-                        df_erros = pd.DataFrame({
-                            'Filme': [f['id'] for f in filmes_calibracao],
-                            'NOD': nods,
-                            'ADC': adcs,
-                            'Dose_Real_Gy': doses,
-                            'Dose_Predita_Gy': doses_pred,
-                            'Erro_Gy': erros_gy,
-                            'Erro_%': erros_pct
-                        })
+                        # Criar DataFrame com dados limpos
+                        dados_tabela = []
+                        for i in range(len(filmes_calibracao)):
+                            dados_tabela.append({
+                                'Filme': int(filmes_calibracao[i]['id']),
+                                'NOD': float(nods[i]),
+                                'ADC': float(adcs[i]),
+                                'Dose_Real_Gy': float(doses[i]),
+                                'Dose_Predita_Gy': float(doses_pred[i]),
+                                'Desvio_Gy': float(erros_gy[i]),
+                                'Erro_%': float(erros_pct[i])
+                            })
+                        
+                        df_erros = pd.DataFrame(dados_tabela)
                         
                         # Gerar graficos
                         fig_buf_nod = gerar_grafico_nod_dose(filmes_calibracao, curva, tipo_filme)
@@ -718,10 +723,10 @@ else:
                 col_graf1, col_graf2 = st.columns(2)
                 with col_graf1:
                     st.subheader("📈 NOD vs Dose")
-                    st.image(resultado['fig_buf_nod'], use_column_width=True)
+                    st.image(resultado['fig_buf_nod'], use_container_width=True)
                 with col_graf2:
                     st.subheader("📉 ADC vs Dose")
-                    st.image(resultado['fig_buf_adc'], use_column_width=True)
+                    st.image(resultado['fig_buf_adc'], use_container_width=True)
                 
                 # Mostrar equacao
                 st.info(f"**Equação:** {resultado['equation']}")
@@ -729,7 +734,8 @@ else:
                 
                 # Tabela de erros
                 st.subheader("Tabela de Erros")
-                st.dataframe(resultado['df_erros'], use_column_width=True, hide_index=True)
+                df_erros = resultado['df_erros'].fillna(0.0)
+                st.dataframe(df_erros, use_container_width=True, hide_index=True)
                 
                 # Salvar curva na sessao permanente
                 st.session_state['curva_calibracao'] = resultado['curva_data']

@@ -8,7 +8,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
 from skimage.measure import label, regionprops
@@ -30,9 +29,14 @@ def calcular_roi_quadrado(largura_px, altura_px, dpi):
     return roi_px, roi_cm
 
 def cortar_filme_unico(imagem):
-    gray = rgb2gray(imagem)
-    thresh = threshold_otsu(gray)
-    binary = gray < thresh
+    gray = para_grayscale(imagem)
+    # Normalizar para 0-1 para Otsu funcionar corretamente com qualquer bit-depth
+    if gray.max() > 1.0:
+        gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
+    else:
+        gray_norm = gray
+    thresh = threshold_otsu(gray_norm)
+    binary = gray_norm < thresh
     binary = clear_border(binary)
     labeled = label(binary)
     regions = regionprops(labeled)
@@ -45,17 +49,21 @@ def cortar_filme_unico(imagem):
     return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)]
 
 def detectar_regioes_unico(imagem, area_min, offset, fechamento, erosao):
-    gray = rgb2gray(imagem)
-    thresh = threshold_otsu(gray)
+    gray = para_grayscale(imagem)
+    if gray.max() > 1.0:
+        gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
+    else:
+        gray_norm = gray
+    thresh = threshold_otsu(gray_norm)
     thresh_ajustado = thresh * (1 - offset)
-    binary = gray < thresh_ajustado
+    binary = gray_norm < thresh_ajustado
     if erosao > 0:
         binary = erosion(binary, square(erosao))
     binary = remove_small_objects(binary, min_size=area_min)
     if fechamento > 0:
         binary = closing(binary, square(fechamento))
     labeled = label(binary)
-    regions = regionprops(labeled, intensity_image=gray)
+    regions = regionprops(labeled, intensity_image=gray_norm)
     regioes = []
     for i, r in enumerate(regions):
         if r.area >= area_min:
@@ -68,17 +76,21 @@ def detectar_regioes_unico(imagem, area_min, offset, fechamento, erosao):
                 'centro': (int(r.centroid[1]), int(r.centroid[0])),
                 'bbox': (minc, minr, w, h), 'razao': razao
             })
-    return regioes, gray
+    return regioes, gray_norm
 
 def detectar_filmes_multiplos(imagem, area_min):
-    gray = rgb2gray(imagem)
-    thresh = threshold_otsu(gray)
-    binary = gray < thresh
+    gray = para_grayscale(imagem)
+    if gray.max() > 1.0:
+        gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
+    else:
+        gray_norm = gray
+    thresh = threshold_otsu(gray_norm)
+    binary = gray_norm < thresh
     binary = clear_border(binary)
     binary = remove_small_objects(binary, min_size=area_min)
     binary = closing(binary, square(5))
     labeled = label(binary)
-    regions = regionprops(labeled, intensity_image=gray)
+    regions = regionprops(labeled, intensity_image=gray_norm)
     filmes = []
     for i, r in enumerate(regions):
         if r.area >= area_min:
@@ -109,21 +121,17 @@ def calcular_intensidade_roi(imagem_filme, roi_px):
     y1 = max(0, cy - meio_roi)
     x2 = min(w, cx + meio_roi)
     y2 = min(h, cy + meio_roi)
-    if len(imagem_filme.shape) == 3:
-        gray = rgb2gray(imagem_filme)
-    else:
-        gray = imagem_filme
-    roi_pixels = gray[y1:y2, x1:x2]
-    intensidade_roi = np.mean(roi_pixels)
-    intensidade_total = np.mean(gray)
+    # Canal vermelho para dosimetria EBT (AAPM TG-55)
+    red = canal_vermelho(imagem_filme)
+    roi_pixels = red[y1:y2, x1:x2]
+    intensidade_roi = float(np.mean(roi_pixels))
+    intensidade_total = float(np.mean(red))
     bbox_roi = (x1, y1, x2 - x1, y2 - y1)
     return intensidade_roi, bbox_roi, intensidade_total
 
 def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar_roi=True):
-    if imagem.max() <= 1:
-        img = (imagem * 255).astype(np.uint8)
-    else:
-        img = imagem.astype(np.uint8)
+    # Normalizar para uint8 apenas para display
+    img = normalizar_para_display(imagem)
     img_pil = Image.fromarray(img)
     draw = ImageDraw.Draw(img_pil)
     try:
@@ -155,10 +163,7 @@ def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar
     return np.array(img_pil)
 
 def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
-    if imagem_filme.max() <= 1:
-        img = (imagem_filme * 255).astype(np.uint8)
-    else:
-        img = imagem_filme.astype(np.uint8)
+    img = normalizar_para_display(imagem_filme)
     img_pil = Image.fromarray(img)
     draw = ImageDraw.Draw(img_pil)
     h, w = img.shape[:2]
@@ -197,7 +202,50 @@ def desenhar_tracejado_fino(draw, x1, y1, x2, y2, cor, largura, segmento=5, espa
         draw.line([(x2, i), (x2, i + seg)], fill=cor, width=largura)
         i += segmento + espaco
 
-def ajustar_bbox(bbox, encolher, expandir):
+def para_grayscale(imagem):
+    """Converte para grayscale mantendo range original (para deteccao)"""
+    if len(imagem.shape) == 3 and imagem.shape[2] >= 3:
+        # Usar canal vermelho para deteccao tambem (melhor para filmes EBT)
+        return imagem[..., 0].astype(np.float64)
+    return imagem.astype(np.float64)
+
+def canal_vermelho(imagem):
+    """Extrai canal vermelho para dosimetria EBT (AAPM TG-55)"""
+    if len(imagem.shape) == 3 and imagem.shape[2] >= 3:
+        return imagem[..., 0].astype(np.float64)
+    return imagem.astype(np.float64)
+
+def normalizar_para_display(imagem):
+    """Normaliza imagem para uint8 apenas para visualizacao"""
+    img_float = imagem.astype(np.float64)
+    img_min = img_float.min()
+    img_max = img_float.max()
+    if img_max > img_min:
+        img_norm = (img_float - img_min) / (img_max - img_min) * 255.0
+    else:
+        img_norm = img_float
+    return img_norm.clip(0, 255).astype(np.uint8)
+
+def carregar_imagem_preservando_bits(arquivo):
+    """Carrega imagem do scanner preservando bit-depth original"""
+    img = Image.open(io.BytesIO(arquivo.read()))
+    img_array = np.array(img)
+    
+    info = {
+        'mode': img.mode,
+        'dtype': str(img_array.dtype),
+        'shape': img_array.shape,
+        'max_val': float(img_array.max()) if img_array.size > 0 else 0,
+        'min_val': float(img_array.min()) if img_array.size > 0 else 0
+    }
+    
+    # Se for float com max <= 1.0, provavelmente ja esta normalizado (escalar de volta)
+    if img_array.dtype in [np.float32, np.float64] and img_array.max() <= 1.0:
+        img_array = (img_array * 65535.0).clip(0, 65535).astype(np.uint16)
+        info['dtype'] = 'uint16 (escalado de float)'
+        info['max_val'] = float(img_array.max())
+    
+    return img_array, info
     x, y, w, h = bbox
     if encolher > 0:
         x += encolher; y += encolher; w -= 2 * encolher; h -= 2 * encolher
@@ -343,8 +391,9 @@ def gerar_grafico_adc_dose(filmes, tipo_filme):
 
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v8.2")
-st.markdown("NOD (Net Optical Density) | Curva crescente | ADC vs Dose")
+st.title("🔬 Project Analyzer v9.0")
+st.markdown("**Correções:** Canal Vermelho (AAPM TG-55) | Preservação 16-bit | ADC vs Dose | NOD vs Dose")
+st.info("ℹ️ O app agora usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -364,6 +413,13 @@ with st.sidebar:
         area_min_multi = st.slider("Area Minima por Filme", 100, 50000, 2000, 100)
         mostrar_recuo = st.checkbox("Mostrar recuo 5mm", value=True)
         mostrar_roi = st.checkbox("Mostrar ROI", value=True)
+        
+        st.markdown("---")
+        st.subheader("Scanner / ADC")
+        inverter_adc = st.checkbox("Scanner com sinal invertido (reflectancia / ADC cresce com dose)", value=False,
+                                   help="Marque se seu scanner gera valores que AUMENTAM com a dose (como no software IBA). Scanners de transmissao tipicamente geram valores que DIMINUEM com a dose.")
+        valor_max_scanner = st.number_input("Valor maximo do scanner (bit-depth)", value=65535, min_value=255, max_value=262143, step=1,
+                                            help="65535 = 16-bit | 16383 = 14-bit | 4095 = 12-bit | 255 = 8-bit")
         
         st.markdown("---")
         st.subheader("Curva de Calibração")
@@ -391,20 +447,23 @@ if metodologia == "Um unico filme":
     arquivo = st.file_uploader("Envie a imagem do filme irradiado", type=['tif','tiff','png','jpg','jpeg'])
     
     if arquivo:
-        img = Image.open(io.BytesIO(arquivo.read()))
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        img_orig = np.array(img)
-        img_norm = img_orig/255.0 if img_orig.max() > 1 else img_orig
+        img_orig, img_info = carregar_imagem_preservando_bits(arquivo)
+        
+        # Mostrar info da imagem
+        st.info(f"📷 Imagem: {img_info['mode']} | {img_info['dtype']} | shape{img_info['shape']} | range [{img_info['min_val']:.1f}, {img_info['max_val']:.1f}]")
         
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original")
-            st.image(img_orig, use_container_width=True)
+            st.image(normalizar_para_display(img_orig), use_container_width=True)
+        
+        with col2:
+            st.subheader("Canal Vermelho (EBT)")
+            st.image(normalizar_para_display(canal_vermelho(img_orig).reshape(img_orig.shape[:2])), use_container_width=True)
         
         if st.button("ANALISAR", type="primary", key="btn_unico"):
             with st.spinner("Processando..."):
-                img_filme = cortar_filme_unico(img_norm)
+                img_filme = cortar_filme_unico(img_orig)
                 if img_filme is None:
                     st.error("Filme nao detectado!")
                     st.stop()
@@ -426,7 +485,7 @@ if metodologia == "Um unico filme":
             st.header("Ajuste Individual das Regioes")
             regioes_ajust = []
             for i, regiao in enumerate(regioes):
-                st.markdown(f"**Regiao {i+1}** (Intensidade: {regiao['intensidade']:.4f})")
+                st.markdown(f"**Regiao {i+1}** (Intensidade: {regiao['intensidade']:.6f})")
                 col_e, col_d = st.columns(2)
                 with col_e:
                     enc = st.slider(f"Encolher R{i+1}", 0, 50, 0, 5, key=f"er_{i}")
@@ -446,7 +505,7 @@ if metodologia == "Um unico filme":
                 'Filme': r['id'], 'Area_cm2': round(r['area'] * cm * cm, 2),
                 'Largura_cm': round(r['bbox'][2] * cm, 2),
                 'Altura_cm': round(r['bbox'][3] * cm, 2),
-                'Intensidade': round(r['intensidade'], 4), 'Razao': round(r['razao'], 2)
+                'Intensidade_Canal_R': round(r['intensidade'], 2), 'Razao': round(r['razao'], 2)
             } for r in reg_ord])
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
@@ -463,19 +522,21 @@ else:
     if arquivos and len(arquivos) > 0:
         st.success(f"{len(arquivos)} arquivo(s) carregado(s)")
         
+        # Mostrar info das imagens
+        for arq in arquivos:
+            _, info = carregar_imagem_preservando_bits(arq)
+            st.caption(f"📷 {arq.name}: {info['mode']} | {info['dtype']} | shape{info['shape']} | range [{info['min_val']:.1f}, {info['max_val']:.1f}]")
+            arq.seek(0)
+        
         if st.button("DETECTAR FILMES", type="primary"):
             with st.spinner("Detectando filmes..."):
                 todos_filmes = []
                 imagens_originais = []
                 
                 for idx_arq, arquivo in enumerate(arquivos):
-                    img = Image.open(io.BytesIO(arquivo.read()))
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    img_np = np.array(img)
-                    img_norm = img_np/255.0 if img_np.max() > 1 else img_np
+                    img_np, img_info = carregar_imagem_preservando_bits(arquivo)
                     
-                    filmes, binary = detectar_filmes_multiplos(img_norm, area_min_multi)
+                    filmes, binary = detectar_filmes_multiplos(img_np, area_min_multi)
                     
                     for f in filmes:
                         f['arquivo'] = arquivo.name
@@ -483,13 +544,18 @@ else:
                         f['roi_px'] = roi_px
                         f['roi_cm'] = roi_cm
                         intens_roi, bbox_roi, intens_total = calcular_intensidade_roi(f['imagem'], roi_px)
+                        # Aplicar inversao de sinal se necessario
+                        if inverter_adc:
+                            intens_roi = valor_max_scanner - intens_roi
+                            intens_total = valor_max_scanner - intens_total
                         f['intensidade_roi'] = intens_roi
                         f['intensidade_total'] = intens_total
                         f['roi_bbox'] = bbox_roi
+                        f['adc_raw'] = intens_roi  # Salvar valor original tambem
                     
                     filmes_temp = ordenar(filmes)
                     img_com_contornos = desenhar_marcacoes_original(
-                        img_norm, filmes_temp, dpi, mostrar_recuo, mostrar_roi
+                        img_np, filmes_temp, dpi, mostrar_recuo, mostrar_roi
                     )
                     
                     imagens_originais.append({
@@ -505,6 +571,7 @@ else:
                 st.session_state['todos_filmes'] = todos_filmes
                 st.session_state['imagens_originais'] = imagens_originais
                 st.session_state['dpi_multi'] = dpi
+                st.session_state['img_infos_multi'] = img_info
                 st.rerun()
         
         if 'todos_filmes' in st.session_state:
@@ -566,7 +633,7 @@ else:
                         with col:
                             st.markdown(f"**Filme {filme['id']}**")
                             st.image(img_com_marcas, use_container_width=True)
-                            st.caption(f"ROI: {filme['roi_cm']:.1f} cm | Int ROI: {filme['intensidade_roi']:.4f}")
+                            st.caption(f"ROI: {filme['roi_cm']:.1f} cm | ADC (Canal R): {filme['intensidade_roi']:.1f}")
             
             # Tabela completa
             st.markdown("---")
@@ -578,8 +645,8 @@ else:
                 'Largura_cm': round(f['bbox'][2] / px_por_cm, 2),
                 'Altura_cm': round(f['bbox'][3] / px_por_cm, 2),
                 'ROI_cm': round(f['roi_cm'], 2),
-                'Intensidade_ROI': round(f['intensidade_roi'], 4),
-                'Intensidade_Total': round(f['intensidade_total'], 4),
+                'ADC_Canal_R': round(f['intensidade_roi'], 1),
+                'ADC_Total_Canal_R': round(f['intensidade_total'], 1),
                 'Centro_X': f['centro'][0], 'Centro_Y': f['centro'][1]
             } for f in todos_filmes])
             
@@ -605,7 +672,7 @@ else:
                 with col_check:
                     usar = st.checkbox(f"Usar", key=f"calib_{i}")
                 with col_info:
-                    st.markdown(f"**Filme {filme['id']}** | Int ROI: {filme['intensidade_roi']:.4f} | ROI: {filme['roi_cm']:.1f} cm")
+                    st.markdown(f"**Filme {filme['id']}** | ADC (Canal R): `{filme['intensidade_roi']:.1f}` | ROI: {filme['roi_cm']:.1f} cm")
                 with col_dose:
                     dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_{i}")
                 

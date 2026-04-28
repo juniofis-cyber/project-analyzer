@@ -4,6 +4,7 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 import json
+import tifffile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -227,23 +228,30 @@ def normalizar_para_display(imagem):
     return img_norm.clip(0, 255).astype(np.uint8)
 
 def carregar_imagem_preservando_bits(arquivo):
-    """Carrega imagem do scanner preservando bit-depth original"""
-    img = Image.open(io.BytesIO(arquivo.read()))
-    img_array = np.array(img)
+    """
+    Carrega imagem TIFF do scanner preservando bit-depth original.
+    Baseado em Dosepy (imageio.v3) e cobaltCorsair (tifffile).
+    """
+    arquivo.seek(0)
+    img_array = tifffile.imread(io.BytesIO(arquivo.read()))
     
     info = {
-        'mode': img.mode,
         'dtype': str(img_array.dtype),
         'shape': img_array.shape,
         'max_val': float(img_array.max()) if img_array.size > 0 else 0,
         'min_val': float(img_array.min()) if img_array.size > 0 else 0
     }
     
+    # TIFFs de 16-bit scanner geralmente sao uint16 com shape (H, W, 3) para RGB
     # Se for float com max <= 1.0, provavelmente ja esta normalizado (escalar de volta)
     if img_array.dtype in [np.float32, np.float64] and img_array.max() <= 1.0:
         img_array = (img_array * 65535.0).clip(0, 65535).astype(np.uint16)
         info['dtype'] = 'uint16 (escalado de float)'
         info['max_val'] = float(img_array.max())
+    
+    # Garantir que eh array numpy
+    if not isinstance(img_array, np.ndarray):
+        raise TypeError(f"Formato de imagem nao suportado: {type(img_array)}")
     
     return img_array, info
 
@@ -343,6 +351,66 @@ def fitting_potencia(nods, doses):
         st.error(f"Erro no fitting: {e}")
         return None
 
+def fitting_racional(nods, doses):
+    """
+    Fitting racional: Dose = -c + b/(NOD - a)
+    Usado por Dosepy (rational_function) e cobaltCorsair (fit_func).
+    Muito eficaz para EBT3.
+    """
+    from scipy.optimize import curve_fit
+    
+    def func_racional(x, a, b, c):
+        return -c + b / (x - a)
+    
+    try:
+        popt, _ = curve_fit(func_racional, nods, doses, p0=[-0.1, 4.0, 4.0], maxfev=1500)
+        a, b, c = popt
+        
+        doses_pred = -c + b / (nods - a)
+        ss_res = np.sum((doses - doses_pred)**2)
+        ss_tot = np.sum((doses - np.mean(doses))**2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = -{c:.4f} + {b:.4f}/(NOD - {a:.4f})", 'type': 'racional'}
+    except Exception as e:
+        st.error(f"Erro no fitting racional: {e}")
+        return None
+
+def fitting_polinomial_n(nods, doses):
+    """
+    Fitting polinomial de grau n: Dose = a*NOD + b*NOD^n
+    Usado por Dosepy (polynomial_n).
+    """
+    from scipy.optimize import curve_fit
+    
+    def func_poly_n(x, a, b, n):
+        return a * x + b * (x ** n)
+    
+    try:
+        popt, _ = curve_fit(func_poly_n, nods, doses, p0=[10.0, 35.0, 2.5], maxfev=1500)
+        a, b, n = popt
+        
+        doses_pred = a * nods + b * (nods ** n)
+        ss_res = np.sum((doses - doses_pred)**2)
+        ss_tot = np.sum((doses - np.mean(doses))**2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        return {'a': a, 'b': b, 'n': n, 'r2': r2, 'equation': f"Dose = {a:.4f}*NOD + {b:.4f}*NOD^{n:.4f}", 'type': 'polynomial_n'}
+    except Exception as e:
+        st.error(f"Erro no fitting polinomial_n: {e}")
+        return None
+
+def _calcular_dose_curva(nod, curva):
+    """Calcula dose predita a partir de um NOD usando a curva ajustada."""
+    if curva.get('type') == 'racional':
+        return -curva['c'] + curva['b'] / (nod - curva['a'])
+    elif curva.get('type') == 'polynomial_n':
+        return curva['a'] * nod + curva['b'] * (nod ** curva['n'])
+    elif 'K1' in curva:
+        return curva['K1'] * (nod ** curva['K2'])
+    else:
+        return curva['a'] * nod**2 + curva['b'] * nod + curva['c']
+
 def gerar_grafico_nod_dose(filmes, curva, tipo_filme):
     """Grafico NOD vs Dose (padrao cientifico)"""
     nods = np.array([f['nod'] for f in filmes])
@@ -352,18 +420,12 @@ def gerar_grafico_nod_dose(filmes, curva, tipo_filme):
     ax.scatter(nods, doses, color='red', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
     
     nods_fit = np.linspace(0, max(nods)*1.15, 200)
-    if 'a' in curva:
-        doses_fit = curva['a'] * nods_fit**2 + curva['b'] * nods_fit + curva['c']
-    else:
-        doses_fit = curva['K1'] * (nods_fit ** curva['K2'])
+    doses_fit = [_calcular_dose_curva(n, curva) for n in nods_fit]
     
     ax.plot(nods_fit, doses_fit, 'b-', linewidth=2.5, label='Curva ajustada', zorder=3)
     
     for i in range(len(nods)):
-        if 'a' in curva:
-            dose_na_curva = curva['a'] * nods[i]**2 + curva['b'] * nods[i] + curva['c']
-        else:
-            dose_na_curva = curva['K1'] * (nods[i] ** curva['K2'])
+        dose_na_curva = _calcular_dose_curva(nods[i], curva)
         ax.plot([nods[i], nods[i]], [doses[i], dose_na_curva], 'g--', alpha=0.5, linewidth=1)
     
     ax.set_xlabel('NOD (Net Optical Density)', fontsize=14, fontweight='bold')
@@ -751,6 +813,10 @@ else:
             # Unidade
             unidade = st.radio("Unidade da dose", ["Gy", "cGy"], horizontal=True)
             
+            # Tipo de fitting
+            tipo_fitting = st.radio("Tipo de fitting", ["Polinomial 2o grau", "Polinomial n (Dosepy)", "Racional (Dosepy/cobaltCorsair)", "Potencia"], horizontal=True, key="fitting_type", 
+                                     help="Polinomial 2o: Dose=a*NOD²+b*NOD+c | Polinomial n: Dose=a*NOD+b*NOD^n (Dosepy) | Racional: Dose=-c+b/(NOD-a) (Dosepy/cobaltCorsair) | Potencia: Dose=K1*NOD^K2")
+            
             # Botao gerar curva
             if st.button("🔬 GERAR CURVA DE CALIBRAÇÃO", type="primary"):
                 if len(filmes_calibracao) < 3:
@@ -816,18 +882,19 @@ else:
                         if nods[i] < nods[i-1] and doses[i] > doses[i-1]:
                             st.warning(f"⚠️ NOD do filme {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < filme anterior ({nods[i-1]:.4f}) apesar de dose maior. Verifique os scans.")
                     
-                    # Escolher fitting conforme tipo de filme
-                    if tipo_filme == "EBT3":
+                    # Escolher fitting (ja definido antes do botao)
+                    if tipo_fitting == "Polinomial 2o grau":
                         curva = fitting_polinomial2(nods, doses)
-                    else:  # EBT4
+                    elif tipo_fitting == "Polinomial n (Dosepy)":
+                        curva = fitting_polinomial_n(nods, doses)
+                    elif tipo_fitting == "Racional (Dosepy/cobaltCorsair)":
+                        curva = fitting_racional(nods, doses)
+                    else:
                         curva = fitting_potencia(nods, doses)
                     
                     if curva:
                         # Calcular doses preditas
-                        if 'a' in curva:
-                            doses_pred = curva['a'] * nods**2 + curva['b'] * nods + curva['c']
-                        else:
-                            doses_pred = curva['K1'] * (nods ** curva['K2'])
+                        doses_pred = np.array([_calcular_dose_curva(n, curva) for n in nods])
                         
                         # Calcular erros com protecao para divisao por zero
                         erros_gy = doses_pred - doses

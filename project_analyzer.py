@@ -255,9 +255,14 @@ if metodologia == "Um unico filme":
             st.image(img_res, use_column_width=True)
             
             mm = 25.4 / dpi_s
+            cm = 25.4 / dpi_s / 10  # cm por pixel
             df = pd.DataFrame([{
-                'N': r['id'], 'Area_mm2': round(r['area'] * mm * mm, 2),
-                'Intensidade': round(r['intensidade'], 4), 'Razao': round(r['razao'], 2)
+                'Filme': r['id'],
+                'Area_cm2': round(r['area'] * cm * cm, 2),
+                'Largura_cm': round(r['bbox'][2] * cm, 2),
+                'Altura_cm': round(r['bbox'][3] * cm, 2),
+                'Intensidade': round(r['intensidade'], 4),
+                'Razao': round(r['razao'], 2)
             } for r in reg_ord])
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
@@ -357,11 +362,14 @@ else:
             st.header("Tabela Completa")
             
             mm = 25.4 / dpi_m
+            cm = 25.4 / dpi_m / 10  # cm por pixel
             df = pd.DataFrame([{
-                'N': f['id'],
+                'Filme': f['id'],
                 'Arquivo': f['arquivo'],
                 'Area_px': int(f['area']),
-                'Area_mm2': round(f['area'] * mm * mm, 2),
+                'Area_cm2': round(f['area'] * cm * cm, 2),
+                'Largura_cm': round(f['bbox'][2] * cm, 2),
+                'Altura_cm': round(f['bbox'][3] * cm, 2),
                 'Intensidade': round(f['intensidade'], 4),
                 'Centro_X': f['centro'][0],
                 'Centro_Y': f['centro'][1]

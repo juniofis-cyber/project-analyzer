@@ -710,23 +710,43 @@ else:
             # Selecionar filmes para calibração
             st.subheader("Selecione os filmes de calibração e informe as doses")
             
+            # Modo manual de ADC
+            usar_adc_manual = st.checkbox("🔧 Usar valores de ADC manualmente (ignorar leitura do scan)", value=False,
+                                          help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada filme.")
+            if usar_adc_manual:
+                st.info("Modo manual ativado. Digite os valores de ADC que você obteve do scanner/software de referência.")
+            
             filmes_calibracao = []
             
             for i, filme in enumerate(todos_filmes):
-                col_check, col_info, col_dose = st.columns([1, 3, 2])
+                if usar_adc_manual:
+                    col_check, col_info, col_adc, col_dose = st.columns([1, 2, 2, 2])
+                else:
+                    col_check, col_info, col_dose = st.columns([1, 3, 2])
+                    
                 with col_check:
                     usar = st.checkbox(f"Usar", key=f"calib_{i}")
                 with col_info:
-                    st.markdown(f"**Filme {filme['id']}** | ADC (Canal R): `{filme['intensidade_roi']:.1f}` | ROI: {filme['roi_cm']:.1f} cm")
+                    st.markdown(f"**Filme {filme['id']}** | ROI: {filme['roi_cm']:.1f} cm")
+                    if not usar_adc_manual:
+                        st.caption(f"ADC auto: {filme['intensidade_roi']:.1f}")
+                
+                if usar_adc_manual:
+                    with col_adc:
+                        adc_manual = st.number_input(f"ADC", min_value=0.0, value=float(filme['intensidade_roi']), step=1.0, key=f"adc_manual_{i}")
+                
                 with col_dose:
                     dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_{i}")
                 
                 if usar:
-                    filmes_calibracao.append({
-                        'filme': filme,
+                    filme_calib = {
+                        'filme': dict(filme),  # copia para nao alterar original
                         'dose': dose_val,
                         'id': filme['id']
-                    })
+                    }
+                    if usar_adc_manual:
+                        filme_calib['filme']['intensidade_roi'] = adc_manual
+                    filmes_calibracao.append(filme_calib)
             
             # Unidade
             unidade = st.radio("Unidade da dose", ["Gy", "cGy"], horizontal=True)
@@ -754,6 +774,8 @@ else:
                         st.error("Os scans parecem estar em 8-bit (0-255). Filmes EBT3/EBT4 escaneados profissionalmente devem ter ADC na faixa de 10.000–60.000 (16-bit).")
                         st.info("**Possíveis causas:**\n1. Você carregou screenshots/prints em vez dos arquivos TIF originais do scanner\n2. As imagens foram salvas como JPG/PNG de 8-bit e perderam a precisão do scanner\n3. O scanner não está configurado para 16-bit / 48-bit color")
                         st.warning("⚠️ A curva será gerada, mas NÃO será confiável para dosimetria clínica.")
+                    elif max_adc < 1000:
+                        st.info(f"ℹ️ ADC na faixa de {min_adc:.0f}–{max_adc:.0f}. Se seu scanner é de transmissão 8-bit ou 12-bit, estes valores são normais. O NOD é o que importa para a calibração.")
                     
                     # Alerta: filme 0 Gy com ADC = 0
                     doses_list = [f['dose'] for f in filmes_calibracao]

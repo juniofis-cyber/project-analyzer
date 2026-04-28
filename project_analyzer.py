@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
+import json
 from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
@@ -115,7 +116,6 @@ def calcular_intensidade_roi(imagem_filme, roi_px):
     return intensidade_roi, bbox_roi, intensidade_total
 
 def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar_roi=True):
-    """Desenha contornos na imagem ORIGINAL do scanner"""
     if imagem.max() <= 1:
         img = (imagem * 255).astype(np.uint8)
     else:
@@ -126,14 +126,10 @@ def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar
         fonte = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 25)
     except:
         fonte = ImageFont.load_default()
-    
     recuo_px = mm_to_pixels(5, dpi)
-    
     for f in filmes:
         x, y, w, h = f['bbox']
-        # Contorno do filme (VERDE)
         draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=3)
-        
         if mostrar_recuo:
             x_recuo = x + recuo_px
             y_recuo = y + recuo_px
@@ -141,37 +137,28 @@ def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar
             h_recuo = h - 2 * recuo_px
             if w_recuo > 0 and h_recuo > 0:
                 desenhar_tracejado_fino(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 2)
-        
         if mostrar_roi and 'roi_bbox' in f:
             rx, ry, rw, rh = f['roi_bbox']
             rx_abs = x + rx
             ry_abs = y + ry
             draw.rectangle([rx_abs, ry_abs, rx_abs + rw, ry_abs + rh], outline=(0, 102, 255), width=3)
-        
         cx, cy = f['centro']
         txt = str(f['id'])
         bbox = draw.textbbox((0, 0), txt, font=fonte)
         tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
         draw.rectangle([cx-tw//2-4, cy-th//2-4, cx+tw//2+4, cy+th//2+4], fill=(0,0,0))
         draw.text((cx-tw//2, cy-th//2), txt, fill=(255,255,255), font=fonte)
-    
     return np.array(img_pil)
 
 def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
-    """Desenha contorno verde, recuo vermelho tracejado e ROI azul na imagem INDIVIDUAL do filme"""
     if imagem_filme.max() <= 1:
         img = (imagem_filme * 255).astype(np.uint8)
     else:
         img = imagem_filme.astype(np.uint8)
-    
     img_pil = Image.fromarray(img)
     draw = ImageDraw.Draw(img_pil)
     h, w = img.shape[:2]
-    
-    # 1. CONTORNO DO FILME (VERDE)
     draw.rectangle([0, 0, w-1, h-1], outline=(0, 255, 0), width=2)
-    
-    # 2. Recuo 5mm (VERMELHO TRACEJADO FINO)
     if recuo_px > 0:
         x_recuo = recuo_px
         y_recuo = recuo_px
@@ -179,38 +166,27 @@ def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
         h_recuo = h - 2 * recuo_px
         if w_recuo > 0 and h_recuo > 0:
             desenhar_tracejado_fino(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 1)
-    
-    # 3. ROI (AZUL)
     if roi_bbox:
         rx, ry, rw, rh = roi_bbox
         draw.rectangle([rx, ry, rx + rw, ry + rh], outline=(0, 102, 255), width=2)
-    
     return np.array(img_pil)
 
 def desenhar_tracejado_fino(draw, x1, y1, x2, y2, cor, largura, segmento=5, espaco=3):
-    """Desenha retangulo tracejado com segmentos menores e mais finos"""
-    # Topo
     i = x1
     while i < x2:
         seg = min(segmento, x2 - i)
         draw.line([(i, y1), (i + seg, y1)], fill=cor, width=largura)
         i += segmento + espaco
-    
-    # Base
     i = x1
     while i < x2:
         seg = min(segmento, x2 - i)
         draw.line([(i, y2), (i + seg, y2)], fill=cor, width=largura)
         i += segmento + espaco
-    
-    # Esquerda
     i = y1
     while i < y2:
         seg = min(segmento, y2 - i)
         draw.line([(x1, i), (x1, i + seg)], fill=cor, width=largura)
         i += segmento + espaco
-    
-    # Direita
     i = y1
     while i < y2:
         seg = min(segmento, y2 - i)
@@ -226,8 +202,114 @@ def ajustar_bbox(bbox, encolher, expandir):
     w = max(10, w); h = max(10, h)
     return (x, y, w, h)
 
-st.title("🔬 Project Analyzer v7.1")
-st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60% da menor dimensao) | Tracejado fino")
+# ==================== FUNCOES DE CALIBRACAO ====================
+
+def calcular_nod_ebt3(filmes_calibracao):
+    """Calcula NOD para EBT3: NOD = log10(PV0 / PVirradiado)"""
+    # Encontrar filme 0 Gy (menor intensidade = maior PV = mais claro)
+    filme_0 = min(filmes_calibracao, key=lambda f: f['intensidade_roi'])
+    pv0 = filme_0['intensidade_roi']
+    
+    for f in filmes_calibracao:
+        pv_irrad = f['intensidade_roi']
+        if pv_irrad > 0:
+            f['nod'] = np.log10(pv0 / pv_irrad)
+        else:
+            f['nod'] = 0.0
+    
+    return pv0
+
+def calcular_pvred_ebt4(filmes_calibracao):
+    """Para EBT4, usa PVred direto (ja e o canal vermelho do ROI)"""
+    for f in filmes_calibracao:
+        f['pvred'] = f['intensidade_roi']
+
+def fitting_ebt3_polinomial2(nods, doses):
+    """Fitting polinomial 2a ordem para EBT3: Dose = a*NOD^2 + b*NOD + c"""
+    coefs = np.polyfit(nods, doses, 2)
+    # coefs = [a, b, c] onde Dose = a*x^2 + b*x + c
+    a, b, c = coefs
+    
+    # Calcular R2
+    doses_pred = a * nods**2 + b * nods + c
+    ss_res = np.sum((doses - doses_pred)**2)
+    ss_tot = np.sum((doses - np.mean(doses))**2)
+    r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    
+    return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = {a:.4f}*NOD² + {b:.4f}*NOD + {c:.4f}"}
+
+def fitting_ebt4_potencia(pvreds, doses):
+    """Fitting funcao potencia para EBT4: Dose = K1 * PVred^K2"""
+    from scipy.optimize import curve_fit
+    
+    def func_potencia(x, K1, K2):
+        return K1 * (x ** K2)
+    
+    try:
+        popt, _ = curve_fit(func_potencia, pvreds, doses, p0=[1e-6, 2.5])
+        K1, K2 = popt
+        
+        # Calcular R2
+        doses_pred = K1 * (pvreds ** K2)
+        ss_res = np.sum((doses - doses_pred)**2)
+        ss_tot = np.sum((doses - np.mean(doses))**2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        return {'K1': K1, 'K2': K2, 'r2': r2, 'equation': f"Dose = {K1:.6f} * PVred^{K2:.4f}"}
+    except Exception as e:
+        st.error(f"Erro no fitting: {e}")
+        return None
+
+def gerar_grafico_calibracao_ebt3(filmes, curva):
+    """Gera grafico NOD vs Dose para EBT3"""
+    import matplotlib.pyplot as plt
+    
+    nods = np.array([f['nod'] for f in filmes])
+    doses = np.array([f['dose'] for f in filmes])
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(nods, doses, color='red', s=100, label='Dados medidos', zorder=5)
+    
+    # Curva fitted
+    nods_fit = np.linspace(min(nods)*0.8, max(nods)*1.2, 100)
+    doses_fit = curva['a'] * nods_fit**2 + curva['b'] * nods_fit + curva['c']
+    ax.plot(nods_fit, doses_fit, 'b-', linewidth=2, label='Curva ajustada')
+    
+    ax.set_xlabel('NOD (Net Optical Density)', fontsize=12)
+    ax.set_ylabel('Dose (Gy)', fontsize=12)
+    ax.set_title(f'Curva de Calibração EBT3\n{curva["equation"]}\nR² = {curva["r2"]:.4f}', fontsize=11)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+def gerar_grafico_calibracao_ebt4(filmes, curva):
+    """Gera grafico PVred vs Dose para EBT4"""
+    import matplotlib.pyplot as plt
+    
+    pvreds = np.array([f['pvred'] for f in filmes])
+    doses = np.array([f['dose'] for f in filmes])
+    
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(pvreds, doses, color='red', s=100, label='Dados medidos', zorder=5)
+    
+    # Curva fitted
+    pv_fit = np.linspace(min(pvreds)*0.8, max(pvreds)*1.2, 100)
+    doses_fit = curva['K1'] * (pv_fit ** curva['K2'])
+    ax.plot(pv_fit, doses_fit, 'b-', linewidth=2, label='Curva ajustada')
+    
+    ax.set_xlabel('PVred (Pixel Value - Canal Vermelho)', fontsize=12)
+    ax.set_ylabel('Dose (Gy)', fontsize=12)
+    ax.set_title(f'Curva de Calibração EBT4\n{curva["equation"]}\nR² = {curva["r2"]:.4f}', fontsize=11)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    return fig
+
+# ==================== INTERFACE ====================
+
+st.title("🔬 Project Analyzer v8.0")
+st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60%) | Curva de Calibração")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -247,6 +329,27 @@ with st.sidebar:
         area_min_multi = st.slider("Area Minima por Filme", 100, 50000, 2000, 100)
         mostrar_recuo = st.checkbox("Mostrar recuo 5mm", value=True)
         mostrar_roi = st.checkbox("Mostrar ROI", value=True)
+        
+        # Curva salva
+        st.markdown("---")
+        st.subheader("Curva de Calibração")
+        if 'curva_calibracao' in st.session_state:
+            st.success("✅ Curva salva na sessão")
+            st.info(f"Tipo: {st.session_state['curva_calibracao']['tipo_filme']}")
+            st.info(f"R²: {st.session_state['curva_calibracao']['r2']:.4f}")
+        else:
+            st.warning("Nenhuma curva salva")
+        
+        # Upload de curva existente
+        curva_upload = st.file_uploader("Carregar curva salva (.json)", type=['json'], key="curva_upload")
+        if curva_upload:
+            try:
+                curva_data = json.load(io.BytesIO(curva_upload.read()))
+                st.session_state['curva_calibracao'] = curva_data
+                st.success("Curva carregada com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao carregar: {e}")
 
 # ==================== MODO UNICO FILME ====================
 
@@ -424,12 +527,9 @@ else:
                     idx = i + j
                     if idx < len(todos_filmes):
                         filme = todos_filmes[idx]
-                        
-                        # Desenhar recuo + ROI no filme individual
                         img_com_marcas = desenhar_marcacoes_filme(
                             filme['imagem'], filme.get('roi_bbox'), recuo_px, dpi_m
                         )
-                        
                         with col:
                             st.markdown(f"**Filme {filme['id']}**")
                             st.image(img_com_marcas, use_column_width=True)
@@ -453,3 +553,152 @@ else:
             st.dataframe(df, use_container_width=True, hide_index=True)
             csv = df.to_csv(index=False)
             st.download_button("Download CSV Completo", csv, "filmes_resultado.csv", "text/csv")
+            
+            # ==================== CURVA DE CALIBRACAO ====================
+            st.markdown("---")
+            st.header("📊 Curva de Calibração")
+            
+            st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
+            st.info(f"Total de filmes disponíveis: {len(todos_filmes)}")
+            st.warning("⚠️ Selecione pelo menos 3 filmes de calibração com doses conhecidas")
+            
+            # Selecionar filmes para calibração
+            st.subheader("Selecione os filmes de calibração e informe as doses")
+            
+            # Criar colunas para os filmes
+            filmes_calibracao = []
+            
+            for i, filme in enumerate(todos_filmes):
+                col_check, col_info, col_dose = st.columns([1, 3, 2])
+                with col_check:
+                    usar = st.checkbox(f"Usar", key=f"calib_{i}")
+                with col_info:
+                    st.markdown(f"**Filme {filme['id']}** | Int ROI: {filme['intensidade_roi']:.4f} | ROI: {filme['roi_cm']:.1f} cm")
+                with col_dose:
+                    dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_{i}")
+                
+                if usar:
+                    filmes_calibracao.append({
+                        'filme': filme,
+                        'dose': dose_val,
+                        'id': filme['id']
+                    })
+            
+            # Unidade
+            unidade = st.radio("Unidade da dose", ["Gy", "cGy"], horizontal=True)
+            
+            # Botao gerar curva
+            if st.button("🔬 GERAR CURVA DE CALIBRAÇÃO", type="primary"):
+                if len(filmes_calibracao) < 3:
+                    st.error(f"❌ Selecione pelo menos 3 filmes de calibração. Atual: {len(filmes_calibracao)}")
+                    st.stop()
+                
+                with st.spinner("Calculando curva de calibração..."):
+                    # Converter dose para Gy se necessario
+                    if unidade == "cGy":
+                        for f in filmes_calibracao:
+                            f['dose'] = f['dose'] / 100.0
+                    
+                    # Calcular valores conforme tipo de filme
+                    if tipo_filme == "EBT3":
+                        pv0 = calcular_nod_ebt3(filmes_calibracao)
+                        nods = np.array([f['nod'] for f in filmes_calibracao])
+                        doses = np.array([f['dose'] for f in filmes_calibracao])
+                        
+                        curva = fitting_ebt3_polinomial2(nods, doses)
+                        
+                        if curva:
+                            st.success("✅ Curva de calibração gerada com sucesso!")
+                            
+                            # Mostrar grafico
+                            fig = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
+                            st.pyplot(fig)
+                            
+                            # Mostrar equacao
+                            st.info(f"**Equação:** {curva['equation']}")
+                            st.info(f"**R²:** {curva['r2']:.6f}")
+                            
+                            # Tabela de erros
+                            st.subheader("Tabela de Erros")
+                            doses_pred = curva['a'] * nods**2 + curva['b'] * nods + curva['c']
+                            df_erros = pd.DataFrame({
+                                'Filme': [f['id'] for f in filmes_calibracao],
+                                'NOD': nods,
+                                'Dose_Real_Gy': doses,
+                                'Dose_Predita_Gy': doses_pred,
+                                'Erro_Gy': doses_pred - doses,
+                                'Erro_%': ((doses_pred - doses) / doses * 100)
+                            })
+                            st.dataframe(df_erros, use_container_width=True, hide_index=True)
+                            
+                            # Salvar curva
+                            curva_data = {
+                                'tipo_filme': 'EBT3',
+                                'equacao': curva['equation'],
+                                'a': float(curva['a']),
+                                'b': float(curva['b']),
+                                'c': float(curva['c']),
+                                'r2': float(curva['r2']),
+                                'dpi': dpi_m,
+                                'unidade': 'Gy',
+                                'doses_calibracao': doses.tolist(),
+                                'nods_calibracao': nods.tolist()
+                            }
+                            
+                    else:  # EBT4
+                        calcular_pvred_ebt4(filmes_calibracao)
+                        pvreds = np.array([f['pvred'] for f in filmes_calibracao])
+                        doses = np.array([f['dose'] for f in filmes_calibracao])
+                        
+                        curva = fitting_ebt4_potencia(pvreds, doses)
+                        
+                        if curva:
+                            st.success("✅ Curva de calibração gerada com sucesso!")
+                            
+                            # Mostrar grafico
+                            fig = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
+                            st.pyplot(fig)
+                            
+                            # Mostrar equacao
+                            st.info(f"**Equação:** {curva['equation']}")
+                            st.info(f"**R²:** {curva['r2']:.6f}")
+                            
+                            # Tabela de erros
+                            st.subheader("Tabela de Erros")
+                            doses_pred = curva['K1'] * (pvreds ** curva['K2'])
+                            df_erros = pd.DataFrame({
+                                'Filme': [f['id'] for f in filmes_calibracao],
+                                'PVred': pvreds,
+                                'Dose_Real_Gy': doses,
+                                'Dose_Predita_Gy': doses_pred,
+                                'Erro_Gy': doses_pred - doses,
+                                'Erro_%': ((doses_pred - doses) / doses * 100)
+                            })
+                            st.dataframe(df_erros, use_container_width=True, hide_index=True)
+                            
+                            # Salvar curva
+                            curva_data = {
+                                'tipo_filme': 'EBT4',
+                                'equacao': curva['equation'],
+                                'K1': float(curva['K1']),
+                                'K2': float(curva['K2']),
+                                'r2': float(curva['r2']),
+                                'dpi': dpi_m,
+                                'unidade': 'Gy',
+                                'doses_calibracao': doses.tolist(),
+                                'pvreds_calibracao': pvreds.tolist()
+                            }
+                    
+                    # Salvar na sessao
+                    st.session_state['curva_calibracao'] = curva_data
+                    
+                    # Download da curva
+                    curva_json = json.dumps(curva_data, indent=2)
+                    st.download_button(
+                        "💾 Download Curva de Calibração (.json)",
+                        curva_json,
+                        f"curva_calibracao_{tipo_filme}.json",
+                        "application/json"
+                    )
+                    
+                    st.rerun()

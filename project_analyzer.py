@@ -555,7 +555,7 @@ if metodologia == "Um unico filme":
         img_orig, img_info = carregar_imagem_preservando_bits(arquivo)
         
         # Mostrar info da imagem
-        st.info(f"📷 Imagem: {img_info['mode']} | {img_info['dtype']} | shape{img_info['shape']} | range [{img_info['min_val']:.1f}, {img_info['max_val']:.1f}]")
+        st.info(f"📷 Imagem: {img_info['dtype']} | shape{img_info['shape']} | range [{img_info['min_val']:.1f}, {img_info['max_val']:.1f}]")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -630,7 +630,7 @@ else:
         # Mostrar info das imagens
         for arq in arquivos:
             _, info = carregar_imagem_preservando_bits(arq)
-            st.caption(f"📷 {arq.name}: {info['mode']} | {info['dtype']} | shape{info['shape']} | range [{info['min_val']:.1f}, {info['max_val']:.1f}]")
+            st.caption(f"📷 {arq.name}: {info['dtype']} | shape{info['shape']} | range [{info['min_val']:.1f}, {info['max_val']:.1f}]")
             arq.seek(0)
         
         if st.button("DETECTAR FILMES", type="primary"):

@@ -206,12 +206,12 @@ def ajustar_bbox(bbox, encolher, expandir):
 
 def calcular_nod_ebt3(filmes_calibracao):
     """Calcula NOD para EBT3: NOD = log10(PV0 / PVirradiado)"""
-    # Encontrar filme 0 Gy (menor intensidade = maior PV = mais claro)
-    filme_0 = min(filmes_calibracao, key=lambda f: f['intensidade_roi'])
-    pv0 = filme_0['intensidade_roi']
+    # Encontrar filme 0 Gy (menor intensidade = mais claro)
+    filme_0 = min(filmes_calibracao, key=lambda f: f['filme']['intensidade_roi'])
+    pv0 = filme_0['filme']['intensidade_roi']
     
     for f in filmes_calibracao:
-        pv_irrad = f['intensidade_roi']
+        pv_irrad = f['filme']['intensidade_roi']
         if pv_irrad > 0:
             f['nod'] = np.log10(pv0 / pv_irrad)
         else:
@@ -222,7 +222,7 @@ def calcular_nod_ebt3(filmes_calibracao):
 def calcular_pvred_ebt4(filmes_calibracao):
     """Para EBT4, usa PVred direto (ja e o canal vermelho do ROI)"""
     for f in filmes_calibracao:
-        f['pvred'] = f['intensidade_roi']
+        f['pvred'] = f['filme']['intensidade_roi']
 
 def fitting_ebt3_polinomial2(nods, doses):
     """Fitting polinomial 2a ordem para EBT3: Dose = a*NOD^2 + b*NOD + c"""

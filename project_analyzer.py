@@ -285,7 +285,12 @@ def gerar_grafico_calibracao_ebt3(filmes, curva):
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    return fig
+    # Salvar em buffer para Streamlit
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 def gerar_grafico_calibracao_ebt4(filmes, curva):
     """Gera grafico PVred vs Dose para EBT4"""
@@ -306,7 +311,12 @@ def gerar_grafico_calibracao_ebt4(filmes, curva):
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    return fig
+    # Salvar em buffer para Streamlit
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 # ==================== INTERFACE ====================
 
@@ -613,8 +623,8 @@ else:
                             st.success("✅ Curva de calibração gerada com sucesso!")
                             
                             # Mostrar grafico
-                            fig = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
-                            st.pyplot(fig)
+                            fig_buf = gerar_grafico_calibracao_ebt3(filmes_calibracao, curva)
+                            st.image(fig_buf, use_column_width=True)
                             
                             # Mostrar equacao
                             st.info(f"**Equação:** {curva['equation']}")
@@ -658,8 +668,8 @@ else:
                             st.success("✅ Curva de calibração gerada com sucesso!")
                             
                             # Mostrar grafico
-                            fig = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
-                            st.pyplot(fig)
+                            fig_buf = gerar_grafico_calibracao_ebt4(filmes_calibracao, curva)
+                            st.image(fig_buf, use_column_width=True)
                             
                             # Mostrar equacao
                             st.info(f"**Equação:** {curva['equation']}")

@@ -140,7 +140,7 @@ def desenhar_marcacoes_original(imagem, filmes, dpi, mostrar_recuo=True, mostrar
             w_recuo = w - 2 * recuo_px
             h_recuo = h - 2 * recuo_px
             if w_recuo > 0 and h_recuo > 0:
-                desenhar_tracejado(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 2)
+                desenhar_tracejado_fino(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 2)
         
         if mostrar_roi and 'roi_bbox' in f:
             rx, ry, rw, rh = f['roi_bbox']
@@ -168,31 +168,51 @@ def desenhar_marcacoes_filme(imagem_filme, roi_bbox, recuo_px, dpi):
     draw = ImageDraw.Draw(img_pil)
     h, w = img.shape[:2]
     
-    # Recuo 5mm (VERMELHO TRACEJADO) - borda interna
+    # Recuo 5mm (VERMELHO TRACEJADO FINO)
     if recuo_px > 0:
         x_recuo = recuo_px
         y_recuo = recuo_px
         w_recuo = w - 2 * recuo_px
         h_recuo = h - 2 * recuo_px
         if w_recuo > 0 and h_recuo > 0:
-            desenhar_tracejado(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 3)
+            desenhar_tracejado_fino(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 1)
     
     # ROI (AZUL)
     if roi_bbox:
         rx, ry, rw, rh = roi_bbox
-        draw.rectangle([rx, ry, rx + rw, ry + rh], outline=(0, 102, 255), width=3)
+        draw.rectangle([rx, ry, rx + rw, ry + rh], outline=(0, 102, 255), width=2)
     
     return np.array(img_pil)
 
-def desenhar_tracejado(draw, x1, y1, x2, y2, cor, largura, segmento=10):
-    for i in range(x1, x2, segmento * 2):
-        draw.line([(i, y1), (min(i + segmento, x2), y1)], fill=cor, width=largura)
-    for i in range(x1, x2, segmento * 2):
-        draw.line([(i, y2), (min(i + segmento, x2), y2)], fill=cor, width=largura)
-    for i in range(y1, y2, segmento * 2):
-        draw.line([(x1, i), (x1, min(i + segmento, y2))], fill=cor, width=largura)
-    for i in range(y1, y2, segmento * 2):
-        draw.line([(x2, i), (x2, min(i + segmento, y2))], fill=cor, width=largura)
+def desenhar_tracejado_fino(draw, x1, y1, x2, y2, cor, largura, segmento=5, espaco=3):
+    """Desenha retangulo tracejado com segmentos menores e mais finos"""
+    # Topo
+    i = x1
+    while i < x2:
+        seg = min(segmento, x2 - i)
+        draw.line([(i, y1), (i + seg, y1)], fill=cor, width=largura)
+        i += segmento + espaco
+    
+    # Base
+    i = x1
+    while i < x2:
+        seg = min(segmento, x2 - i)
+        draw.line([(i, y2), (i + seg, y2)], fill=cor, width=largura)
+        i += segmento + espaco
+    
+    # Esquerda
+    i = y1
+    while i < y2:
+        seg = min(segmento, y2 - i)
+        draw.line([(x1, i), (x1, i + seg)], fill=cor, width=largura)
+        i += segmento + espaco
+    
+    # Direita
+    i = y1
+    while i < y2:
+        seg = min(segmento, y2 - i)
+        draw.line([(x2, i), (x2, i + seg)], fill=cor, width=largura)
+        i += segmento + espaco
 
 def ajustar_bbox(bbox, encolher, expandir):
     x, y, w, h = bbox
@@ -203,8 +223,8 @@ def ajustar_bbox(bbox, encolher, expandir):
     w = max(10, w); h = max(10, h)
     return (x, y, w, h)
 
-st.title("🔬 Project Analyzer v7.0")
-st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60% da menor dimensao)")
+st.title("🔬 Project Analyzer v7.1")
+st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60% da menor dimensao) | Tracejado fino")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -307,6 +327,8 @@ else:
         if st.button("DETECTAR FILMES", type="primary"):
             with st.spinner("Detectando filmes..."):
                 todos_filmes = []
+                imagens_originais = []
+                
                 for idx_arq, arquivo in enumerate(arquivos):
                     img = Image.open(io.BytesIO(arquivo.read()))
                     if img.mode != 'RGB':
@@ -326,26 +348,23 @@ else:
                         f['intensidade_total'] = intens_total
                         f['roi_bbox'] = bbox_roi
                     
-                    st.markdown("---")
-                    st.subheader(f"Imagem {idx_arq+1}: {arquivo.name}")
+                    filmes_temp = ordenar(filmes)
+                    img_com_contornos = desenhar_marcacoes_original(
+                        img_norm, filmes_temp, dpi, mostrar_recuo, mostrar_roi
+                    )
                     
-                    col_img, col_masc = st.columns(2)
-                    with col_img:
-                        st.markdown("**Original com deteccao**")
-                        filmes_temp = ordenar(filmes)
-                        img_com_contornos = desenhar_marcacoes_original(
-                            img_norm, filmes_temp, dpi, mostrar_recuo, mostrar_roi
-                        )
-                        st.image(img_com_contornos, use_column_width=True)
-                    with col_masc:
-                        st.markdown("**Mascara de deteccao**")
-                        st.image((binary * 255).astype(np.uint8), use_column_width=True)
+                    imagens_originais.append({
+                        'nome': arquivo.name,
+                        'imagem': img_com_contornos,
+                        'mascara': binary,
+                        'filmes': filmes_temp
+                    })
                     
-                    st.info(f"{len(filmes)} filme(s) detectado(s)")
                     todos_filmes.extend(filmes)
                 
                 todos_filmes = ordenar(todos_filmes)
                 st.session_state['todos_filmes'] = todos_filmes
+                st.session_state['imagens_originais'] = imagens_originais
                 st.session_state['dpi_multi'] = dpi
                 st.rerun()
         
@@ -354,14 +373,30 @@ else:
             st.header("Resultado Final - Todos os Filmes")
             
             todos_filmes = st.session_state['todos_filmes']
+            imagens_originais = st.session_state['imagens_originais']
             dpi_m = st.session_state['dpi_multi']
             px_por_cm = dpi_m / 2.54
             recuo_px = mm_to_pixels(5, dpi_m)
             
             st.success(f"Total: {len(todos_filmes)} filmes | Ordenados: 1=claro -> {len(todos_filmes)}=escuro")
             
-            # Grid com filmes e marcacoes
-            cols_por_linha = 3
+            # Mostrar imagens originais com deteccao
+            st.subheader("Imagens Originais com Deteccao")
+            for img_info in imagens_originais:
+                col_orig, col_masc = st.columns(2)
+                with col_orig:
+                    st.markdown(f"**{img_info['nome']}** - Original com marcacoes")
+                    st.image(img_info['imagem'], use_column_width=True)
+                with col_masc:
+                    st.markdown("**Mascara de deteccao**")
+                    st.image((img_info['mascara'] * 255).astype(np.uint8), use_column_width=True)
+                st.info(f"{len(img_info['filmes'])} filme(s) nesta imagem")
+            
+            st.markdown("---")
+            
+            # Grid com filmes individuais e marcacoes
+            st.subheader("Filmes Individuais com Recuo e ROI")
+            cols_por_linha = 4
             for i in range(0, len(todos_filmes), cols_por_linha):
                 cols = st.columns(cols_por_linha)
                 for j, col in enumerate(cols):

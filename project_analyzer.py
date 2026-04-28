@@ -351,35 +351,11 @@ def fitting_potencia(nods, doses):
         st.error(f"Erro no fitting: {e}")
         return None
 
-def fitting_racional(nods, doses):
-    """
-    Fitting racional: Dose = -c + b/(NOD - a)
-    Usado por Dosepy (rational_function) e cobaltCorsair (fit_func).
-    Muito eficaz para EBT3.
-    """
-    from scipy.optimize import curve_fit
-    
-    def func_racional(x, a, b, c):
-        return -c + b / (x - a)
-    
-    try:
-        popt, _ = curve_fit(func_racional, nods, doses, p0=[-0.1, 4.0, 4.0], maxfev=1500)
-        a, b, c = popt
-        
-        doses_pred = -c + b / (nods - a)
-        ss_res = np.sum((doses - doses_pred)**2)
-        ss_tot = np.sum((doses - np.mean(doses))**2)
-        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-        
-        return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = -{c:.4f} + {b:.4f}/(NOD - {a:.4f})", 'type': 'racional'}
-    except Exception as e:
-        st.error(f"Erro no fitting racional: {e}")
-        return None
-
 def fitting_polinomial_n(nods, doses):
     """
     Fitting polinomial de grau n: Dose = a*NOD + b*NOD^n
     Usado por Dosepy (polynomial_n).
+    Mais flexivel que polinomial 2o grau porque o expoente n eh ajustado.
     """
     from scipy.optimize import curve_fit
     
@@ -387,7 +363,14 @@ def fitting_polinomial_n(nods, doses):
         return a * x + b * (x ** n)
     
     try:
-        popt, _ = curve_fit(func_poly_n, nods, doses, p0=[10.0, 35.0, 2.5], maxfev=1500)
+        # p0 baseado em dados tipicos de EBT3/EBT4
+        # a: coeficiente linear (~5-15), b: coeficiente da potencia (~20-50), n: expoente (~1.5-3.0)
+        popt, _ = curve_fit(
+            func_poly_n, nods, doses, 
+            p0=[5.0, 30.0, 2.0],
+            bounds=([0, 0, 1.0], [100, 200, 5.0]),
+            maxfev=5000
+        )
         a, b, n = popt
         
         doses_pred = a * nods + b * (nods ** n)
@@ -398,6 +381,37 @@ def fitting_polinomial_n(nods, doses):
         return {'a': a, 'b': b, 'n': n, 'r2': r2, 'equation': f"Dose = {a:.4f}*NOD + {b:.4f}*NOD^{n:.4f}", 'type': 'polynomial_n'}
     except Exception as e:
         st.error(f"Erro no fitting polinomial_n: {e}")
+        return None
+
+def fitting_racional(nods, doses):
+    """
+    Fitting racional: Dose = -c + b/(NOD - a)
+    Usado por Dosepy (rational_function) e cobaltCorsair (fit_func).
+    Muito eficaz para EBT3. Pode falhar se NOD estiver muito proximo de 'a'.
+    """
+    from scipy.optimize import curve_fit
+    
+    def func_racional(x, a, b, c):
+        return -c + b / (x - a)
+    
+    try:
+        # Para evitar divisao por zero, 'a' deve ser negativo (menor que qualquer NOD)
+        popt, _ = curve_fit(
+            func_racional, nods, doses, 
+            p0=[-0.5, 50.0, 5.0],
+            bounds=([-10.0, 0.1, 0.1], [-0.001, 500.0, 50.0]),
+            maxfev=5000
+        )
+        a, b, c = popt
+        
+        doses_pred = -c + b / (nods - a)
+        ss_res = np.sum((doses - doses_pred)**2)
+        ss_tot = np.sum((doses - np.mean(doses))**2)
+        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        
+        return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = -{c:.4f} + {b:.4f}/(NOD - {a:.4f})", 'type': 'racional'}
+    except Exception as e:
+        st.warning(f"Fitting racional falhou: {e}. Tente outro tipo de fitting.")
         return None
 
 def _calcular_dose_curva(nod, curva):
@@ -448,32 +462,39 @@ def gerar_grafico_nod_dose(filmes, curva, tipo_filme):
     return buf
 
 def gerar_grafico_adc_dose(filmes, tipo_filme):
-    """Grafico ADC (Pixel Value) vs Dose - relacao direta"""
+    """
+    Grafico ADC (Pixel Value) vs Dose - relacao direta.
+    NUNCA faz fitting polinomial em ADC (numericamente instavel com valores 10k-60k).
+    Mostra apenas pontos + spline suave para visualizacao.
+    """
     adcs = np.array([f['filme']['intensidade_roi'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.scatter(adcs, doses, color='darkorange', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
     
-    # Fitting polinomial 2a ordem para ADC vs Dose
+    # Spline suave apenas para visualizacao (nao eh fitting!)
     try:
-        coefs = np.polyfit(adcs, doses, 2)
-        a, b, c = coefs
-        adcs_fit = np.linspace(min(adcs)*0.9, max(adcs)*1.05, 200)
-        doses_fit = a * adcs_fit**2 + b * adcs_fit + c
-        ax.plot(adcs_fit, doses_fit, 'purple', linewidth=2.5, label=f'Dose = {a:.4f}*ADC² + {b:.4f}*ADC + {c:.4f}', zorder=3)
+        from scipy.interpolate import make_interp_spline
+        # Ordenar por ADC para spline fazer sentido
+        ordem = np.argsort(adcs)
+        adcs_ord = adcs[ordem]
+        doses_ord = doses[ordem]
         
-        # Calcular R2
-        doses_pred = a * adcs**2 + b * adcs + c
-        ss_res = np.sum((doses - doses_pred)**2)
-        ss_tot = np.sum((doses - np.mean(doses))**2)
-        r2_adc = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-    except:
-        r2_adc = 0
+        # Só faz spline se tivermos pelo menos 4 pontos
+        if len(adcs) >= 4:
+            x_spline = np.linspace(min(adcs), max(adcs), 200)
+            spl = make_interp_spline(adcs_ord, doses_ord, k=2)
+            y_spline = spl(x_spline)
+            # Clip para nao ir abaixo de zero
+            y_spline = np.clip(y_spline, 0, None)
+            ax.plot(x_spline, y_spline, 'purple', linewidth=2.0, alpha=0.6, linestyle='--', label='Interpolacao (visual)', zorder=2)
+    except Exception:
+        pass
     
     ax.set_xlabel('ADC (Average Digitized Count)', fontsize=14, fontweight='bold')
     ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Curva de Calibração {tipo_filme} - ADC vs Dose\nR² = {r2_adc:.6f}', 
+    ax.set_title(f'Curva de Calibração {tipo_filme} - ADC vs Dose\n(Canal Vermelho, valores brutos do scanner)', 
                  fontsize=13, fontweight='bold')
     ax.legend(fontsize=12, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -481,7 +502,6 @@ def gerar_grafico_adc_dose(filmes, tipo_filme):
     ax.set_ylim(bottom=0)
     
     # Inverter eixo X apenas se ADC diminui com dose (transmissao padrao)
-    # Se ADC aumenta com dose, deixar eixo normal
     if len(adcs) >= 2 and doses[-1] > doses[0]:
         if adcs[-1] < adcs[0]:
             ax.invert_xaxis()
@@ -496,8 +516,8 @@ def gerar_grafico_adc_dose(filmes, tipo_filme):
 
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.0")
-st.markdown("**Correções:** Canal Vermelho (AAPM TG-55) | Preservação 16-bit | ADC vs Dose | NOD vs Dose")
+st.title("🔬 Project Analyzer v9.1")
+st.markdown("**Corrigido:** tifffile para 16-bit | Fittings Dosepy (polynomial_n, racional) | ADC sem fitting instável")
 st.info("ℹ️ O app agora usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)

@@ -386,7 +386,7 @@ else:
             # Mostrar imagens originais com deteccao
             st.subheader("Imagens Originais com Deteccao")
             for img_info in imagens_originais:
-                col_orig, col_masc = st.columns([4, 1])
+                col_orig, col_masc = st.columns(2)
                 with col_orig:
                     st.markdown(f"**{img_info['nome']}** - Original com marcacoes")
                     st.image(img_info['imagem'], use_column_width=True)

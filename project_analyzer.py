@@ -209,14 +209,7 @@ def ajustar_bbox(bbox, encolher, expandir):
 # ==================== FUNCOES DE CALIBRACAO ====================
 
 def calcular_nod(filmes_calibracao):
-    """Calcula NOD para qualquer filme: NOD = log10(PV0 / PVirradiado)
-    
-    NOD (Net Optical Density) e o padrao cientifico universal:
-    - Filme claro (0 Gy): PV alto -> NOD baixo
-    - Filme escuro (dose alta): PV baixo -> NOD alto
-    - A curva Dose vs NOD e CRESCENTE (dose aumenta com NOD)
-    """
-    # Encontrar filme 0 Gy (mais claro = maior intensidade = maior PV)
+    """Calcula NOD: NOD = log10(PV0 / PVirradiado)"""
     filme_0 = max(filmes_calibracao, key=lambda f: f['filme']['intensidade_roi'])
     pv0 = filme_0['filme']['intensidade_roi']
     
@@ -230,7 +223,7 @@ def calcular_nod(filmes_calibracao):
     return pv0
 
 def fitting_polinomial2(nods, doses):
-    """Fitting polinomial 2a ordem: Dose = a*NOD^2 + b*NOD + c"""
+    """Fitting: Dose = a*NOD^2 + b*NOD + c"""
     coefs = np.polyfit(nods, doses, 2)
     a, b, c = coefs
     
@@ -242,7 +235,7 @@ def fitting_polinomial2(nods, doses):
     return {'a': a, 'b': b, 'c': c, 'r2': r2, 'equation': f"Dose = {a:.4f}*NOD² + {b:.4f}*NOD + {c:.4f}"}
 
 def fitting_potencia(nods, doses):
-    """Fitting funcao potencia: Dose = K1 * NOD^K2"""
+    """Fitting: Dose = K1 * NOD^K2"""
     from scipy.optimize import curve_fit
     
     def func_potencia(x, K1, K2):
@@ -262,27 +255,22 @@ def fitting_potencia(nods, doses):
         st.error(f"Erro no fitting: {e}")
         return None
 
-def gerar_grafico_calibracao(filmes, curva, tipo_filme):
-    """Gera grafico NOD vs Dose (padrao cientifico - curva crescente)"""
+def gerar_grafico_nod_dose(filmes, curva, tipo_filme):
+    """Grafico NOD vs Dose (padrao cientifico)"""
     nods = np.array([f['nod'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.scatter(nods, doses, color='red', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
     
-    # Curva fitted
     nods_fit = np.linspace(0, max(nods)*1.15, 200)
-    
     if 'a' in curva:
-        # Polinomial
         doses_fit = curva['a'] * nods_fit**2 + curva['b'] * nods_fit + curva['c']
     else:
-        # Potencia
         doses_fit = curva['K1'] * (nods_fit ** curva['K2'])
     
     ax.plot(nods_fit, doses_fit, 'b-', linewidth=2.5, label='Curva ajustada', zorder=3)
     
-    # Linhas dos pontos ate a curva
     for i in range(len(nods)):
         if 'a' in curva:
             dose_na_curva = curva['a'] * nods[i]**2 + curva['b'] * nods[i] + curva['c']
@@ -292,16 +280,12 @@ def gerar_grafico_calibracao(filmes, curva, tipo_filme):
     
     ax.set_xlabel('NOD (Net Optical Density)', fontsize=14, fontweight='bold')
     ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Curva de Calibração {tipo_filme}\n{curva["equation"]}\nR² = {curva["r2"]:.6f}', 
+    ax.set_title(f'Curva de Calibração {tipo_filme} - NOD vs Dose\n{curva["equation"]}\nR² = {curva["r2"]:.6f}', 
                  fontsize=13, fontweight='bold')
     ax.legend(fontsize=12, loc='upper left')
     ax.grid(True, alpha=0.3, linestyle='--')
-    
-    # Destacar origem
     ax.axhline(y=0, color='k', linewidth=0.5)
     ax.axvline(x=0, color='k', linewidth=0.5)
-    
-    # Ajustar limites para mostrar curva crescente claramente
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
     
@@ -313,10 +297,54 @@ def gerar_grafico_calibracao(filmes, curva, tipo_filme):
     plt.close(fig)
     return buf
 
+def gerar_grafico_adc_dose(filmes, tipo_filme):
+    """Grafico ADC (Pixel Value) vs Dose - relacao direta"""
+    adcs = np.array([f['filme']['intensidade_roi'] for f in filmes])
+    doses = np.array([f['dose'] for f in filmes])
+    
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.scatter(adcs, doses, color='darkorange', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
+    
+    # Fitting polinomial 2a ordem para ADC vs Dose
+    try:
+        coefs = np.polyfit(adcs, doses, 2)
+        a, b, c = coefs
+        adcs_fit = np.linspace(min(adcs)*0.9, max(adcs)*1.05, 200)
+        doses_fit = a * adcs_fit**2 + b * adcs_fit + c
+        ax.plot(adcs_fit, doses_fit, 'purple', linewidth=2.5, label=f'Dose = {a:.4f}*ADC² + {b:.4f}*ADC + {c:.4f}', zorder=3)
+        
+        # Calcular R2
+        doses_pred = a * adcs**2 + b * adcs + c
+        ss_res = np.sum((doses - doses_pred)**2)
+        ss_tot = np.sum((doses - np.mean(doses))**2)
+        r2_adc = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+    except:
+        r2_adc = 0
+    
+    ax.set_xlabel('ADC (Average Digitized Count)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Curva de Calibração {tipo_filme} - ADC vs Dose\nR² = {r2_adc:.6f}', 
+                 fontsize=13, fontweight='bold')
+    ax.legend(fontsize=12, loc='upper right')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.axhline(y=0, color='k', linewidth=0.5)
+    ax.set_ylim(bottom=0)
+    
+    # Inverter eixo X (ADC diminui com dose)
+    ax.invert_xaxis()
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v8.1")
-st.markdown("NOD (Net Optical Density) | Curva crescente padrao cientifico")
+st.title("🔬 Project Analyzer v8.2")
+st.markdown("NOD (Net Optical Density) | Curva crescente | ADC vs Dose")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -420,7 +448,7 @@ if metodologia == "Um unico filme":
                 'Altura_cm': round(r['bbox'][3] * cm, 2),
                 'Intensidade': round(r['intensidade'], 4), 'Razao': round(r['razao'], 2)
             } for r in reg_ord])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, use_column_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
 
 # ==================== MODO VARIOS FILMES ====================
@@ -603,11 +631,11 @@ else:
                         for f in filmes_calibracao:
                             f['dose'] = f['dose'] / 100.0
                     
-                    # Calcular NOD para TODOS os filmes (EBT3 e EBT4)
-                    # NOD e o padrao cientifico universal
+                    # Calcular NOD para TODOS os filmes
                     pv0 = calcular_nod(filmes_calibracao)
                     nods = np.array([f['nod'] for f in filmes_calibracao])
                     doses = np.array([f['dose'] for f in filmes_calibracao])
+                    adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
                     
                     st.info(f"PV do filme 0 Gy (referência): {pv0:.4f}")
                     
@@ -624,17 +652,28 @@ else:
                         else:
                             doses_pred = curva['K1'] * (nods ** curva['K2'])
                         
+                        # Calcular erros com protecao para divisao por zero
+                        erros_gy = doses_pred - doses
+                        erros_pct = []
+                        for i in range(len(doses)):
+                            if doses[i] > 0:
+                                erros_pct.append((doses_pred[i] - doses[i]) / doses[i] * 100)
+                            else:
+                                erros_pct.append(0.0)  # Dose 0 Gy = erro 0%
+                        
                         df_erros = pd.DataFrame({
                             'Filme': [f['id'] for f in filmes_calibracao],
                             'NOD': nods,
+                            'ADC': adcs,
                             'Dose_Real_Gy': doses,
                             'Dose_Predita_Gy': doses_pred,
-                            'Erro_Gy': doses_pred - doses,
-                            'Erro_%': ((doses_pred - doses) / doses * 100)
+                            'Erro_Gy': erros_gy,
+                            'Erro_%': erros_pct
                         })
                         
-                        # Gerar grafico
-                        fig_buf = gerar_grafico_calibracao(filmes_calibracao, curva, tipo_filme)
+                        # Gerar graficos
+                        fig_buf_nod = gerar_grafico_nod_dose(filmes_calibracao, curva, tipo_filme)
+                        fig_buf_adc = gerar_grafico_adc_dose(filmes_calibracao, tipo_filme)
                         
                         # Salvar na sessao
                         curva_data = {
@@ -645,7 +684,8 @@ else:
                             'unidade': 'Gy',
                             'pv0_referencia': float(pv0),
                             'doses_calibracao': doses.tolist(),
-                            'nods_calibracao': nods.tolist()
+                            'nods_calibracao': nods.tolist(),
+                            'adcs_calibracao': adcs.tolist()
                         }
                         
                         if 'a' in curva:
@@ -660,7 +700,8 @@ else:
                             'tipo': tipo_filme,
                             'equation': curva['equation'],
                             'r2': float(curva['r2']),
-                            'fig_buf': fig_buf,
+                            'fig_buf_nod': fig_buf_nod,
+                            'fig_buf_adc': fig_buf_adc,
                             'df_erros': df_erros,
                             'curva_data': curva_data
                         }
@@ -673,8 +714,14 @@ else:
                 
                 st.success("✅ Curva de calibração gerada com sucesso!")
                 
-                # Mostrar grafico
-                st.image(resultado['fig_buf'], use_column_width=True)
+                # Mostrar dois graficos lado a lado
+                col_graf1, col_graf2 = st.columns(2)
+                with col_graf1:
+                    st.subheader("📈 NOD vs Dose")
+                    st.image(resultado['fig_buf_nod'], use_column_width=True)
+                with col_graf2:
+                    st.subheader("📉 ADC vs Dose")
+                    st.image(resultado['fig_buf_adc'], use_column_width=True)
                 
                 # Mostrar equacao
                 st.info(f"**Equação:** {resultado['equation']}")
@@ -682,7 +729,7 @@ else:
                 
                 # Tabela de erros
                 st.subheader("Tabela de Erros")
-                st.dataframe(resultado['df_erros'], use_container_width=True, hide_index=True)
+                st.dataframe(resultado['df_erros'], use_column_width=True, hide_index=True)
                 
                 # Salvar curva na sessao permanente
                 st.session_state['curva_calibracao'] = resultado['curva_data']

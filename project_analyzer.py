@@ -4,6 +4,12 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
 import json
+
+# Configurar matplotlib para Streamlit Cloud
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
@@ -262,8 +268,6 @@ def fitting_ebt4_potencia(pvreds, doses):
 
 def gerar_grafico_calibracao_ebt3(filmes, curva):
     """Gera grafico NOD vs Dose para EBT3"""
-    import matplotlib.pyplot as plt
-    
     nods = np.array([f['nod'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     
@@ -285,8 +289,6 @@ def gerar_grafico_calibracao_ebt3(filmes, curva):
 
 def gerar_grafico_calibracao_ebt4(filmes, curva):
     """Gera grafico PVred vs Dose para EBT4"""
-    import matplotlib.pyplot as plt
-    
     pvreds = np.array([f['pvred'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     

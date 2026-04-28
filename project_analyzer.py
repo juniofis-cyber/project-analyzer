@@ -1,5 +1,8 @@
 """
-Project Analyzer - Modo Unico Filme + Modo Varios Filmes
+Project Analyzer v7.0
+Modo Unico Filme + Modo Varios Filmes
+Com recuo AAPM TG-55 (5mm) e ROI proporcional centralizado
+Cores: Verde (filme), Vermelho tracejado (recuo), Azul (ROI)
 """
 
 import streamlit as st
@@ -7,6 +10,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
+
 from skimage.color import rgb2gray
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
@@ -15,10 +19,36 @@ from skimage.segmentation import clear_border
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 
-# ==================== FUNCOES COMUNS ====================
+def mm_to_pixels(mm, dpi):
+    """Converte mm para pixels baseado no DPI"""
+    return int((mm / 25.4) * dpi)
+
+def calcular_roi_quadrado(largura_px, altura_px, dpi):
+    """
+    Calcula ROI quadrado centralizado conforme literatura:
+    - 60% da menor dimensao do filme
+    - Minimo: 0.5 cm
+    - Maximo: 2.5 cm
+    """
+    # Converter para cm
+    px_por_cm = dpi / 2.54
+    largura_cm = largura_px / px_por_cm
+    altura_cm = altura_px / px_por_cm
+    
+    # 60% da menor dimensao (literatura: 50-70%)
+    menor_dimensao_cm = min(largura_cm, altura_cm)
+    roi_cm = menor_dimensao_cm * 0.60
+    
+    # Limites: min 0.5 cm, max 2.5 cm
+    roi_cm = max(0.5, min(roi_cm, 2.5))
+    
+    # Converter para pixels
+    roi_px = int(roi_cm * px_por_cm)
+    
+    return roi_px, roi_cm
 
 def cortar_filme_unico(imagem):
-    """Corta um unico filme da imagem (modo unico)"""
+    """Detecta e corta um unico filme da imagem"""
     gray = rgb2gray(imagem)
     thresh = threshold_otsu(gray)
     binary = gray < thresh
@@ -66,21 +96,11 @@ def detectar_regioes_unico(imagem, area_min, offset, fechamento, erosao):
 def detectar_filmes_multiplos(imagem, area_min):
     """Detecta multiplos filmes cortados em uma imagem"""
     gray = rgb2gray(imagem)
-    
-    # Otsu para separar fundo branco dos filmes
     thresh = threshold_otsu(gray)
-    binary = gray < thresh  # Filmes sao mais escuros que fundo
-    
-    # Limpar bordas
+    binary = gray < thresh
     binary = clear_border(binary)
-    
-    # Remover ruidos muito pequenos
     binary = remove_small_objects(binary, min_size=area_min)
-    
-    # Fechar buracos
     binary = closing(binary, square(5))
-    
-    # Labeling - cada filme recebe um numero
     labeled = label(binary)
     regions = regionprops(labeled, intensity_image=gray)
     
@@ -90,15 +110,13 @@ def detectar_filmes_multiplos(imagem, area_min):
             minr, minc, maxr, maxc = r.bbox
             w = maxc - minc
             h = maxr - minr
-            
-            # Cortar o filme individual
             filme_cortado = imagem[minr:maxr, minc:maxc]
             
             filmes.append({
                 'idx': i,
                 'imagem': filme_cortado,
                 'area': r.area,
-                'intensidade': r.mean_intensity,
+                'intensidade_media': r.mean_intensity,
                 'centro': (int(r.centroid[1]), int(r.centroid[0])),
                 'bbox': (minc, minr, w, h),
                 'arquivo': ''
@@ -107,13 +125,53 @@ def detectar_filmes_multiplos(imagem, area_min):
     return filmes, binary
 
 def ordenar(regioes):
-    ordenadas = sorted(regioes, key=lambda x: x['intensidade'], reverse=True)
+    ordenadas = sorted(regioes, key=lambda x: x['intensidade_media'] if 'intensidade_media' in x else x['intensidade'], reverse=True)
     for i, r in enumerate(ordenadas, 1):
         r['id'] = i
     return ordenadas
 
-def desenhar_contornos(imagem, filmes):
-    """Desenha contornos verdes em volta de cada filme"""
+def calcular_intensidade_roi(imagem_filme, bbox_filme, roi_px, gray_original=None):
+    """
+    Calcula a intensidade media dentro do ROI centralizado
+    Retorna: (intensidade_roi, bbox_roi, intensidade_total)
+    """
+    h, w = imagem_filme.shape[:2]
+    
+    # Centro do filme
+    cx = w // 2
+    cy = h // 2
+    
+    # Metade do ROI
+    meio_roi = roi_px // 2
+    
+    # Coordenadas do ROI (garantir que nao saia do filme)
+    x1 = max(0, cx - meio_roi)
+    y1 = max(0, cy - meio_roi)
+    x2 = min(w, cx + meio_roi)
+    y2 = min(h, cy + meio_roi)
+    
+    # Converter para escala de cinza
+    if len(imagem_filme.shape) == 3:
+        gray = rgb2gray(imagem_filme)
+    else:
+        gray = imagem_filme
+    
+    # Intensidade no ROI
+    roi_pixels = gray[y1:y2, x1:x2]
+    intensidade_roi = np.mean(roi_pixels)
+    
+    # Intensidade do filme inteiro
+    intensidade_total = np.mean(gray)
+    
+    # Bbox do ROI relativo ao filme
+    bbox_roi = (x1, y1, x2 - x1, y2 - y1)
+    
+    return intensidade_roi, bbox_roi, intensidade_total
+
+def desenhar_marcacoes(imagem, filmes, dpi, mostrar_recuo=True, mostrar_roi=True):
+    """
+    Desenha contornos verdes, recuo vermelho tracejado e ROI azul
+    """
     if imagem.max() <= 1:
         img = (imagem * 255).astype(np.uint8)
     else:
@@ -127,17 +185,58 @@ def desenhar_contornos(imagem, filmes):
     except:
         fonte = ImageFont.load_default()
     
+    # Recuo em pixels (5 mm padrao AAPM)
+    recuo_px = mm_to_pixels(5, dpi)
+    
     for f in filmes:
         x, y, w, h = f['bbox']
-        draw.rectangle([x, y, x+w, y+h], outline=(0, 255, 0), width=3)
+        
+        # 1. CONTORNO DO FILME (VERDE, continuo)
+        draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=3)
+        
+        if mostrar_recuo:
+            # 2. MARGEM DE RECUO (VERMELHO, tracejado)
+            x_recuo = x + recuo_px
+            y_recuo = y + recuo_px
+            w_recuo = w - 2 * recuo_px
+            h_recuo = h - 2 * recuo_px
+            
+            if w_recuo > 0 and h_recuo > 0:
+                # Desenhar retangulo tracejado
+                desenhar_tracejado(draw, x_recuo, y_recuo, x_recuo + w_recuo, y_recuo + h_recuo, (255, 0, 0), 2)
+        
+        if mostrar_roi and 'roi_px' in f and 'roi_bbox' in f:
+            # 3. ROI (AZUL, continuo)
+            rx, ry, rw, rh = f['roi_bbox']
+            # Coordenadas absolutas na imagem original
+            rx_abs = x + rx
+            ry_abs = y + ry
+            draw.rectangle([rx_abs, ry_abs, rx_abs + rw, ry_abs + rh], outline=(0, 102, 255), width=3)
+        
+        # Numero do filme
         cx, cy = f['centro']
-        txt = str(f.get('id', f['idx']+1))
+        txt = str(f['id'])
         bbox = draw.textbbox((0, 0), txt, font=fonte)
         tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
         draw.rectangle([cx-tw//2-4, cy-th//2-4, cx+tw//2+4, cy+th//2+4], fill=(0,0,0))
         draw.text((cx-tw//2, cy-th//2), txt, fill=(255,255,255), font=fonte)
     
     return np.array(img_pil)
+
+def desenhar_tracejado(draw, x1, y1, x2, y2, cor, largura, segmento=8):
+    """Desenha retangulo tracejado"""
+    # Topo
+    for i in range(x1, x2, segmento * 2):
+        draw.line([(i, y1), (min(i + segmento, x2), y1)], fill=cor, width=largura)
+    # Base
+    for i in range(x1, x2, segmento * 2):
+        draw.line([(i, y2), (min(i + segmento, x2), y2)], fill=cor, width=largura)
+    # Esquerda
+    for i in range(y1, y2, segmento * 2):
+        draw.line([(x1, i), (x1, min(i + segmento, y2))], fill=cor, width=largura)
+    # Direita
+    for i in range(y1, y2, segmento * 2):
+        draw.line([(x2, i), (x2, min(i + segmento, y2))], fill=cor, width=largura)
 
 def ajustar_bbox(bbox, encolher, expandir):
     x, y, w, h = bbox
@@ -157,7 +256,8 @@ def ajustar_bbox(bbox, encolher, expandir):
 
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer")
+st.title("🔬 Project Analyzer v7.0")
+st.markdown("Recuo AAPM TG-55 (5mm) | ROI proporcional (60% da menor dimensao)")
 
 # Selecao de tipo de filme
 st.header("Tipo de Filme")
@@ -184,15 +284,19 @@ with st.sidebar:
         erosao_global = st.slider("Erosao Global", 0, 10, 0, 1)
     else:
         st.subheader("Modo Varios Filmes")
-        area_min_multi = st.slider("Area Minima por Filme", 100, 50000, 2000, 100,
-                                  help="Filmes menores que isso serao ignorados como ruido")
+        area_min_multi = st.slider("Area Minima por Filme", 100, 50000, 2000, 100)
+        
+        st.markdown("**Padroes AAPM TG-55**")
+        st.info("Recuo: 5 mm (fixo)\nROI: 60% da menor dimensao")
+        
+        mostrar_recuo = st.checkbox("Mostrar recuo 5mm", value=True)
+        mostrar_roi = st.checkbox("Mostrar ROI", value=True)
 
 # ==================== MODO UNICO FILME ====================
 
 if metodologia == "Um unico filme":
     st.header("Upload do Filme Irradiado")
-    arquivo = st.file_uploader("Envie a imagem do filme EBT3 irradiado", 
-                              type=['tif','tiff','png','jpg','jpeg'])
+    arquivo = st.file_uploader("Envie a imagem do filme irradiado", type=['tif','tiff','png','jpg','jpeg'])
     
     if arquivo:
         img = Image.open(io.BytesIO(arquivo.read()))
@@ -249,13 +353,12 @@ if metodologia == "Um unico filme":
                 })
             
             reg_ord = ordenar(regioes_ajust)
-            img_res = desenhar_contornos(img_filme, reg_ord)
+            img_res = desenhar_marcacoes(img_filme, reg_ord, dpi_s)
             
             st.subheader("Resultado Final")
             st.image(img_res, use_column_width=True)
             
-            mm = 25.4 / dpi_s
-            cm = 25.4 / dpi_s / 10  # cm por pixel
+            cm = 1 / (dpi_s / 2.54)
             df = pd.DataFrame([{
                 'Filme': r['id'],
                 'Area_cm2': round(r['area'] * cm * cm, 2),
@@ -280,12 +383,11 @@ else:
     if arquivos and len(arquivos) > 0:
         st.success(f"{len(arquivos)} arquivo(s) carregado(s)")
         
-        if st.button("🔍 DETECTAR FILMES", type="primary"):
-            with st.spinner("Detectando filmes em todas as imagens..."):
+        if st.button("DETECTAR FILMES", type="primary"):
+            with st.spinner("Detectando filmes..."):
                 
                 todos_filmes = []
                 
-                # Processar cada arquivo
                 for idx_arq, arquivo in enumerate(arquivos):
                     img = Image.open(io.BytesIO(arquivo.read()))
                     if img.mode != 'RGB':
@@ -293,39 +395,52 @@ else:
                     img_np = np.array(img)
                     img_norm = img_np/255.0 if img_np.max() > 1 else img_np
                     
-                    # Detectar filmes nesta imagem
                     filmes, binary = detectar_filmes_multiplos(img_norm, area_min_multi)
                     
-                    # Guardar nome do arquivo
                     for f in filmes:
                         f['arquivo'] = arquivo.name
+                        
+                        # Calcular ROI proporcional (60% da menor dimensao, padrao literatura)
+                        roi_px, roi_cm = calcular_roi_quadrado(f['bbox'][2], f['bbox'][3], dpi)
+                        f['roi_px'] = roi_px
+                        f['roi_cm'] = roi_cm
+                        
+                        # Calcular intensidade no ROI
+                        intens_roi, bbox_roi, intens_total = calcular_intensidade_roi(
+                            f['imagem'], f['bbox'], roi_px
+                        )
+                        f['intensidade_roi'] = intens_roi
+                        f['intensidade_total'] = intens_total
+                        f['roi_bbox'] = bbox_roi
                     
-                    # Mostrar resultado desta imagem
-                    st.markdown(f"---")
+                    # Mostrar passo a passo
+                    st.markdown("---")
                     st.subheader(f"Imagem {idx_arq+1}: {arquivo.name}")
                     
                     col_img, col_masc = st.columns(2)
                     with col_img:
                         st.markdown("**Original com deteccao**")
-                        img_com_contornos = desenhar_contornos(img_norm, filmes)
+                        filmes_temp = ordenar(filmes)
+                        img_com_contornos = desenhar_marcacoes(
+                            img_norm, filmes_temp, dpi, mostrar_recuo, mostrar_roi
+                        )
                         st.image(img_com_contornos, use_column_width=True)
                     with col_masc:
                         st.markdown("**Mascara de deteccao**")
                         st.image((binary * 255).astype(np.uint8), use_column_width=True)
                     
-                    st.info(f"{len(filmes)} filme(s) detectado(s) nesta imagem")
+                    st.info(f"{len(filmes)} filme(s) detectado(s)")
                     
                     todos_filmes.extend(filmes)
                 
-                # Ordenar todos os filmes por intensidade
+                # Ordenar todos por intensidade
                 todos_filmes = ordenar(todos_filmes)
                 
-                # Salvar no session state
                 st.session_state['todos_filmes'] = todos_filmes
                 st.session_state['dpi_multi'] = dpi
                 st.rerun()
         
-        # Mostrar resultado final
+        # Resultado final
         if 'todos_filmes' in st.session_state:
             st.markdown("---")
             st.header("Resultado Final - Todos os Filmes")
@@ -333,10 +448,9 @@ else:
             todos_filmes = st.session_state['todos_filmes']
             dpi_m = st.session_state['dpi_multi']
             
-            st.success(f"Total de {len(todos_filmes)} filmes detectados")
-            st.info("Ordenados do mais claro (1) ao mais escuro (N)")
+            st.success(f"Total: {len(todos_filmes)} filmes | Ordenados: 1=claro -> {len(todos_filmes)}=escuro")
             
-            # Grid com todos os filmes
+            # Grid com filmes
             cols_por_linha = 4
             for i in range(0, len(todos_filmes), cols_por_linha):
                 cols = st.columns(cols_por_linha)
@@ -346,7 +460,6 @@ else:
                         filme = todos_filmes[idx]
                         img_filme = filme['imagem']
                         
-                        # Converter para exibicao
                         if img_filme.max() <= 1:
                             img_display = (img_filme * 255).astype(np.uint8)
                         else:
@@ -355,22 +468,22 @@ else:
                         with col:
                             st.markdown(f"**Filme {filme['id']}**")
                             st.image(img_display, use_column_width=True)
-                            st.caption(f"Int: {filme['intensidade']:.4f}")
+                            st.caption(f"ROI: {filme['roi_cm']:.1f} cm | Int ROI: {filme['intensidade_roi']:.4f}")
             
             # Tabela completa
             st.markdown("---")
             st.header("Tabela Completa")
             
-            mm = 25.4 / dpi_m
-            cm = 25.4 / dpi_m / 10  # cm por pixel
+            px_por_cm = dpi_m / 2.54
             df = pd.DataFrame([{
                 'Filme': f['id'],
                 'Arquivo': f['arquivo'],
-                'Area_px': int(f['area']),
-                'Area_cm2': round(f['area'] * cm * cm, 2),
-                'Largura_cm': round(f['bbox'][2] * cm, 2),
-                'Altura_cm': round(f['bbox'][3] * cm, 2),
-                'Intensidade': round(f['intensidade'], 4),
+                'Area_cm2': round(f['area'] / (px_por_cm ** 2), 2),
+                'Largura_cm': round(f['bbox'][2] / px_por_cm, 2),
+                'Altura_cm': round(f['bbox'][3] / px_por_cm, 2),
+                'ROI_cm': round(f['roi_cm'], 2),
+                'Intensidade_ROI': round(f['intensidade_roi'], 4),
+                'Intensidade_Total': round(f['intensidade_total'], 4),
                 'Centro_X': f['centro'][0],
                 'Centro_Y': f['centro'][1]
             } for f in todos_filmes])
@@ -378,4 +491,4 @@ else:
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             csv = df.to_csv(index=False)
-            st.download_button("📥 Download CSV Completo", csv, "filmes_resultado.csv", "text/csv")
+            st.download_button("Download CSV Completo", csv, "filmes_resultado.csv", "text/csv")

@@ -50,6 +50,18 @@ def cortar_filme_unico(imagem):
     thresh = threshold_otsu(gray_norm)
     binary = gray_norm < thresh
     binary = clear_border(binary)
+    
+    # Verificar se o array eh valido
+    if binary is None or binary.size == 0:
+        return None
+    
+    # Garantir tipo booleano
+    binary = np.asarray(binary, dtype=bool)
+    
+    # Verificar se tem pixels True (objetos detectados)
+    if not np.any(binary):
+        return None
+    
     labeled = label(binary)
     regions = regionprops(labeled)
     if not regions:
@@ -1081,85 +1093,92 @@ if metodologia == "Um unico filme":
                         # Detectar filme na imagem
                         filme_mapa = cortar_filme_unico(img_mapa)
                         if filme_mapa is None:
-                            st.error("Filme nao detectado! Tente outra imagem.")
+                            st.error("❌ Filme não detectado automaticamente na imagem. Tente:")
+                            st.info("1. Verificar se o filme está visível e com contraste na imagem")
+                            st.info("2. Usar uma imagem onde o filme ocupe mais espaço")
+                            st.stop()
+                        
+                        st.success(f"✅ Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
+                        
+                        # Mostrar preview do filme detectado
+                        st.subheader("Preview do Filme Detectado")
+                        st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
+                        
+                        # Parametros do mapa
+                        col_p1, col_p2, col_p3 = st.columns(3)
+                        with col_p1:
+                            dose_prescrita = st.number_input("Dose prescrita (Gy)", min_value=0.1, value=10.0, step=0.5)
+                        with col_p2:
+                            paleta = st.selectbox("Paleta de cores", 
+                                                 ['turbo', 'jet', 'viridis', 'hot', 'plasma', 'coolwarm'],
+                                                 index=0)
+                        with col_p3:
+                            cor_isodose = st.selectbox("Cor das isodoses", 
+                                                       ['white', 'black', 'red', 'yellow', 'cyan'],
+                                                       index=0)
+                            
+                        # Isodoses
+                        st.subheader("Isodoses (%)")
+                        niveis_default = [80, 90, 95, 100, 105]
+                        cols_iso = st.columns(len(niveis_default))
+                        niveis_selecionados = []
+                        for i, (col, nivel) in enumerate(zip(cols_iso, niveis_default)):
+                            with col:
+                                if st.checkbox(f"{nivel}%", value=(nivel in [80, 90, 100]), key=f"iso_{nivel}"):
+                                    niveis_selecionados.append(nivel)
+                            
+                        if len(niveis_selecionados) == 0:
+                            st.warning("Selecione pelo menos uma isodose.")
                         else:
-                            st.success(f"Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
-                            
-                            # Parametros do mapa
-                            col_p1, col_p2, col_p3 = st.columns(3)
-                            with col_p1:
-                                dose_prescrita = st.number_input("Dose prescrita (Gy)", min_value=0.1, value=10.0, step=0.5)
-                            with col_p2:
-                                paleta = st.selectbox("Paleta de cores", 
-                                                     ['turbo', 'jet', 'viridis', 'hot', 'plasma', 'coolwarm'],
-                                                     index=0)
-                            with col_p3:
-                                cor_isodose = st.selectbox("Cor das isodoses", 
-                                                           ['white', 'black', 'red', 'yellow', 'cyan'],
-                                                           index=0)
-                            
-                            # Isodoses
-                            st.subheader("Isodoses (%)")
-                            niveis_default = [80, 90, 95, 100, 105]
-                            cols_iso = st.columns(len(niveis_default))
-                            niveis_selecionados = []
-                            for i, (col, nivel) in enumerate(zip(cols_iso, niveis_default)):
-                                with col:
-                                    if st.checkbox(f"{nivel}%", value=(nivel in [80, 90, 100]), key=f"iso_{nivel}"):
-                                        niveis_selecionados.append(nivel)
-                            
-                            if len(niveis_selecionados) == 0:
-                                st.warning("Selecione pelo menos uma isodose.")
-                            else:
-                                niveis_selecionados.sort()
+                            niveis_selecionados.sort()
                                 
-                                if st.button("🔬 GERAR MAPA DE DOSE", type="primary", key="btn_mapa"):
-                                    with st.spinner("Calculando mapa de dose..."):
-                                        # Gerar mapa de dose
-                                        mapa_dose = gerar_mapa_dose(filme_mapa, pv0, curva, adc_aumenta_com_dose)
+                            if st.button("🔬 GERAR MAPA DE DOSE", type="primary", key="btn_mapa"):
+                                with st.spinner("Calculando mapa de dose..."):
+                                    # Gerar mapa de dose
+                                    mapa_dose = gerar_mapa_dose(filme_mapa, pv0, curva, adc_aumenta_com_dose)
                                         
-                                        # Estatisticas
-                                        dose_max = float(np.max(mapa_dose))
-                                        dose_media = float(np.mean(mapa_dose[mapa_dose > 0]))
-                                        dose_min = float(np.min(mapa_dose[mapa_dose > 0]))
+                                    # Estatisticas
+                                    dose_max = float(np.max(mapa_dose))
+                                    dose_media = float(np.mean(mapa_dose[mapa_dose > 0]))
+                                    dose_min = float(np.min(mapa_dose[mapa_dose > 0]))
                                         
-                                        st.subheader("Estatísticas do Mapa")
-                                        col_e1, col_e2, col_e3 = st.columns(3)
-                                        with col_e1:
-                                            st.metric("Dose Máxima", f"{dose_max:.3f} Gy")
-                                        with col_e2:
-                                            st.metric("Dose Média", f"{dose_media:.3f} Gy")
-                                        with col_e3:
-                                            st.metric("Dose Mínima", f"{dose_min:.3f} Gy")
+                                    st.subheader("Estatísticas do Mapa")
+                                    col_e1, col_e2, col_e3 = st.columns(3)
+                                    with col_e1:
+                                        st.metric("Dose Máxima", f"{dose_max:.3f} Gy")
+                                    with col_e2:
+                                        st.metric("Dose Média", f"{dose_media:.3f} Gy")
+                                    with col_e3:
+                                        st.metric("Dose Mínima", f"{dose_min:.3f} Gy")
                                         
-                                        # Mapa com isodoses
-                                        st.subheader("Mapa de Dose com Isodoses")
-                                        img_mapa_iso = gerar_mapa_isodose(mapa_dose, dose_prescrita, 
-                                                                          niveis_selecionados, paleta, cor_isodose)
-                                        st.image(img_mapa_iso, use_container_width=True)
+                                    # Mapa com isodoses
+                                    st.subheader("Mapa de Dose com Isodoses")
+                                    img_mapa_iso = gerar_mapa_isodose(mapa_dose, dose_prescrita, 
+                                                                      niveis_selecionados, paleta, cor_isodose)
+                                    st.image(img_mapa_iso, use_container_width=True)
                                         
-                                        # Legenda
-                                        st.subheader("Legenda das Isodoses")
-                                        df_legenda = gerar_legenda_isodose(niveis_selecionados, dose_prescrita)
-                                        st.dataframe(df_legenda, use_container_width=True, hide_index=True)
+                                    # Legenda
+                                    st.subheader("Legenda das Isodoses")
+                                    df_legenda = gerar_legenda_isodose(niveis_selecionados, dose_prescrita)
+                                    st.dataframe(df_legenda, use_container_width=True, hide_index=True)
                                         
-                                        # Histograma de dose
-                                        st.subheader("Distribuição de Dose")
-                                        fig_hist, ax_hist = plt.subplots(figsize=(8, 4))
-                                        doses_validas = mapa_dose[mapa_dose > 0].flatten()
-                                        ax_hist.hist(doses_validas, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
-                                        ax_hist.axvline(dose_prescrita, color='red', linestyle='--', linewidth=2, label=f'Prescrita: {dose_prescrita:.2f} Gy')
-                                        ax_hist.set_xlabel('Dose (Gy)', fontsize=11)
-                                        ax_hist.set_ylabel('Frequência (pixels)', fontsize=11)
-                                        ax_hist.set_title('Histograma de Dose no Filme', fontsize=12, fontweight='bold')
-                                        ax_hist.legend()
-                                        ax_hist.grid(True, alpha=0.3)
-                                        plt.tight_layout()
-                                        buf_hist = io.BytesIO()
-                                        fig_hist.savefig(buf_hist, format='png', dpi=100, bbox_inches='tight')
-                                        buf_hist.seek(0)
-                                        plt.close(fig_hist)
-                                        st.image(buf_hist, use_container_width=True)
+                                    # Histograma de dose
+                                    st.subheader("Distribuição de Dose")
+                                    fig_hist, ax_hist = plt.subplots(figsize=(8, 4))
+                                    doses_validas = mapa_dose[mapa_dose > 0].flatten()
+                                    ax_hist.hist(doses_validas, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+                                    ax_hist.axvline(dose_prescrita, color='red', linestyle='--', linewidth=2, label=f'Prescrita: {dose_prescrita:.2f} Gy')
+                                    ax_hist.set_xlabel('Dose (Gy)', fontsize=11)
+                                    ax_hist.set_ylabel('Frequência (pixels)', fontsize=11)
+                                    ax_hist.set_title('Histograma de Dose no Filme', fontsize=12, fontweight='bold')
+                                    ax_hist.legend()
+                                    ax_hist.grid(True, alpha=0.3)
+                                    plt.tight_layout()
+                                    buf_hist = io.BytesIO()
+                                    fig_hist.savefig(buf_hist, format='png', dpi=100, bbox_inches='tight')
+                                    buf_hist.seek(0)
+                                    plt.close(fig_hist)
+                                    st.image(buf_hist, use_container_width=True)
 
 # ==================== MODO VARIOS FILMES ====================
 
@@ -1167,8 +1186,8 @@ else:
     st.header("Upload dos Filmes Escaneados")
     st.info("Dica: Segure Ctrl e clique para selecionar multiplos arquivos")
     arquivos = st.file_uploader("Envie uma ou mais imagens com os filmes",
-                               type=['tif','tiff','png','jpg','jpeg'],
-                               accept_multiple_files=True)
+                           type=['tif','tiff','png','jpg','jpeg'],
+                           accept_multiple_files=True)
     
     if arquivos and len(arquivos) > 0:
         st.success(f"{len(arquivos)} arquivo(s) carregado(s)")
@@ -1197,8 +1216,8 @@ else:
                         intens_roi, bbox_roi, intens_total = calcular_intensidade_roi(f['imagem'], roi_px)
                         # Aplicar inversao de sinal se necessario
                         if inverter_adc:
-                            intens_roi = valor_max_scanner - intens_roi
-                            intens_total = valor_max_scanner - intens_total
+                                intens_roi = valor_max_scanner - intens_roi
+                                intens_total = valor_max_scanner - intens_total
                         f['intensidade_roi'] = intens_roi
                         f['intensidade_total'] = intens_total
                         f['roi_bbox'] = bbox_roi
@@ -1279,12 +1298,12 @@ else:
                     if idx < len(todos_filmes):
                         filme = todos_filmes[idx]
                         img_com_marcas = desenhar_marcacoes_filme(
-                            filme['imagem'], filme.get('roi_bbox'), recuo_px, dpi_m
+                        filme['imagem'], filme.get('roi_bbox'), recuo_px, dpi_m
                         )
                         with col:
-                            st.markdown(f"**Filme {filme['id']}**")
-                            st.image(img_com_marcas, use_container_width=True)
-                            st.caption(f"ROI: {filme['roi_cm']:.1f} cm | ADC (Canal R): {filme['intensidade_roi']:.1f}")
+                                st.markdown(f"**Filme {filme['id']}**")
+                                st.image(img_com_marcas, use_container_width=True)
+                                st.caption(f"ROI: {filme['roi_cm']:.1f} cm | ADC (Canal R): {filme['intensidade_roi']:.1f}")
             
             # Tabela completa
             st.markdown("---")
@@ -1321,7 +1340,7 @@ else:
             
             # Modo manual de ADC
             usar_adc_manual = st.checkbox("🔧 Usar valores de ADC manualmente (ignorar leitura do scan)", value=False,
-                                          help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada filme.")
+                                      help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada filme.")
             if usar_adc_manual:
                 st.info("Modo manual ativado. Digite os valores de ADC que você obteve do scanner/software de referência.")
             
@@ -1362,7 +1381,7 @@ else:
             
             # Tipo de fitting
             tipo_fitting = st.radio("Tipo de fitting", ["Polinomial 2o grau", "Polinomial n (Dosepy)", "Racional (Dosepy/cobaltCorsair)", "Potencia"], horizontal=True, key="fitting_type", 
-                                     help="Polinomial 2o: Dose=a*NOD²+b*NOD+c | Polinomial n: Dose=a*NOD+b*NOD^n (Dosepy) | Racional: Dose=-c+b/(NOD-a) (Dosepy/cobaltCorsair) | Potencia: Dose=K1*NOD^K2")
+                                 help="Polinomial 2o: Dose=a*NOD²+b*NOD+c | Polinomial n: Dose=a*NOD+b*NOD^n (Dosepy) | Racional: Dose=-c+b/(NOD-a) (Dosepy/cobaltCorsair) | Potencia: Dose=K1*NOD^K2")
             
             # Botao gerar curva
             if st.button("🔬 GERAR CURVA DE CALIBRAÇÃO", type="primary"):
@@ -1475,13 +1494,13 @@ else:
                         dados_tabela = []
                         for i in range(len(filmes_calibracao)):
                             dados_tabela.append({
-                                'Filme': f"Filme {i+1}",
-                                'NOD': float(nods_ord[i]),
-                                'Dose_Real_Gy': float(doses_ord[i]),
-                                'Dose_Predita_Gy': float(doses_pred_ord[i]),
-                                'Desvio_Gy': float(erros_gy[i]),
-                                'Erro_%': float(erros_pct[i])
-                            })
+                            'Filme': f"Filme {i+1}",
+                            'NOD': float(nods_ord[i]),
+                            'Dose_Real_Gy': float(doses_ord[i]),
+                            'Dose_Predita_Gy': float(doses_pred_ord[i]),
+                            'Desvio_Gy': float(erros_gy[i]),
+                            'Erro_%': float(erros_pct[i])
+                        })
                         
                         df_erros = pd.DataFrame(dados_tabela)
                         
@@ -1491,15 +1510,15 @@ else:
                         
                         # Salvar na sessao
                         curva_data = {
-                            'tipo_filme': tipo_filme,
-                            'equacao': curva['equation'],
-                            'r2': float(curva['r2']),
-                            'dpi': dpi_m,
-                            'unidade': 'Gy',
-                            'pv0_referencia': float(pv0),
-                            'doses_calibracao': doses.tolist(),
-                            'nods_calibracao': nods.tolist(),
-                            'adcs_calibracao': adcs.tolist()
+                        'tipo_filme': tipo_filme,
+                        'equacao': curva['equation'],
+                        'r2': float(curva['r2']),
+                        'dpi': dpi_m,
+                        'unidade': 'Gy',
+                        'pv0_referencia': float(pv0),
+                        'doses_calibracao': doses.tolist(),
+                        'nods_calibracao': nods.tolist(),
+                        'adcs_calibracao': adcs.tolist()
                         }
                         
                         if 'a' in curva:
@@ -1511,13 +1530,13 @@ else:
                             curva_data['K2'] = float(curva['K2'])
                         
                         st.session_state['resultado_curva'] = {
-                            'tipo': tipo_filme,
-                            'equation': curva['equation'],
-                            'r2': float(curva['r2']),
-                            'fig_buf_nod': fig_buf_nod,
-                            'fig_buf_adc': fig_buf_adc,
-                            'df_erros': df_erros,
-                            'curva_data': curva_data
+                        'tipo': tipo_filme,
+                        'equation': curva['equation'],
+                        'r2': float(curva['r2']),
+                        'fig_buf_nod': fig_buf_nod,
+                        'fig_buf_adc': fig_buf_adc,
+                        'df_erros': df_erros,
+                        'curva_data': curva_data
                         }
                 
                 st.rerun()
@@ -1577,8 +1596,8 @@ else:
                     
                     # Upload do filme irradiado para mapear
                     arq_mapa_m = st.file_uploader("Envie o filme irradiado para gerar o mapa de dose", 
-                                                  type=['tif','tiff','png','jpg','jpeg'],
-                                                  key="mapa_upload_multi")
+                                              type=['tif','tiff','png','jpg','jpeg'],
+                                              key="mapa_upload_multi")
                     
                     if arq_mapa_m:
                         img_mapa_m, info_mapa_m = carregar_imagem_preservando_bits(arq_mapa_m)
@@ -1592,109 +1611,109 @@ else:
                         else:
                             st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
                             
-                            # Selecionar qual filme mapear
-                            filme_selecionado = filmes_mapa[0]
-                            if len(filmes_mapa) > 1:
-                                opcao_filme = st.selectbox("Selecione o filme para mapear", 
-                                                           [f"Filme {i+1}" for i in range(len(filmes_mapa))])
-                                idx_filme = int(opcao_filme.split()[-1]) - 1
-                                filme_selecionado = filmes_mapa[idx_filme]
+                        # Selecionar qual filme mapear
+                        filme_selecionado = filmes_mapa[0]
+                        if len(filmes_mapa) > 1:
+                            opcao_filme = st.selectbox("Selecione o filme para mapear", 
+                                                       [f"Filme {i+1}" for i in range(len(filmes_mapa))])
+                            idx_filme = int(opcao_filme.split()[-1]) - 1
+                            filme_selecionado = filmes_mapa[idx_filme]
                             
-                            filme_mapa_m = filme_selecionado['imagem']
-                            st.success(f"Filme selecionado: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                        filme_mapa_m = filme_selecionado['imagem']
+                        st.success(f"Filme selecionado: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
                             
-                            # Parametros do mapa
-                            col_p1, col_p2, col_p3 = st.columns(3)
-                            with col_p1:
-                                dose_prescrita_m = st.number_input("Dose prescrita (Gy)", min_value=0.1, value=10.0, step=0.5, key="dose_presc_m")
-                            with col_p2:
-                                paleta_m = st.selectbox("Paleta de cores", 
-                                                       ['turbo', 'jet', 'viridis', 'hot', 'plasma', 'coolwarm'],
-                                                       index=0, key="paleta_m")
-                            with col_p3:
-                                cor_iso_m = st.selectbox("Cor das isodoses", 
-                                                        ['white', 'black', 'red', 'yellow', 'cyan'],
-                                                        index=0, key="cor_iso_m")
+                        # Parametros do mapa
+                        col_p1, col_p2, col_p3 = st.columns(3)
+                        with col_p1:
+                            dose_prescrita_m = st.number_input("Dose prescrita (Gy)", min_value=0.1, value=10.0, step=0.5, key="dose_presc_m")
+                        with col_p2:
+                            paleta_m = st.selectbox("Paleta de cores", 
+                                                   ['turbo', 'jet', 'viridis', 'hot', 'plasma', 'coolwarm'],
+                                                   index=0, key="paleta_m")
+                        with col_p3:
+                            cor_iso_m = st.selectbox("Cor das isodoses", 
+                                                    ['white', 'black', 'red', 'yellow', 'cyan'],
+                                                    index=0, key="cor_iso_m")
                             
-                            # Isodoses
-                            st.subheader("Isodoses (%)")
-                            niveis_default_m = [80, 90, 95, 100, 105]
-                            cols_iso_m = st.columns(len(niveis_default_m))
-                            niveis_sel_m = []
-                            for i, (col, nivel) in enumerate(zip(cols_iso_m, niveis_default_m)):
-                                with col:
-                                    if st.checkbox(f"{nivel}%", value=(nivel in [80, 90, 100]), key=f"iso_m_{nivel}"):
-                                        niveis_sel_m.append(nivel)
+                        # Isodoses
+                        st.subheader("Isodoses (%)")
+                        niveis_default_m = [80, 90, 95, 100, 105]
+                        cols_iso_m = st.columns(len(niveis_default_m))
+                        niveis_sel_m = []
+                        for i, (col, nivel) in enumerate(zip(cols_iso_m, niveis_default_m)):
+                            with col:
+                                if st.checkbox(f"{nivel}%", value=(nivel in [80, 90, 100]), key=f"iso_m_{nivel}"):
+                                    niveis_sel_m.append(nivel)
                             
-                            if len(niveis_sel_m) == 0:
-                                st.warning("Selecione pelo menos uma isodose.")
-                            else:
-                                niveis_sel_m.sort()
+                        if len(niveis_sel_m) == 0:
+                            st.warning("Selecione pelo menos uma isodose.")
+                        else:
+                            niveis_sel_m.sort()
                                 
-                                if st.button("🔬 GERAR MAPA DE DOSE", type="primary", key="btn_mapa_m"):
-                                    with st.spinner("Calculando mapa de dose..."):
-                                        # Determinar direcao do scanner a partir dos dados de calibracao
-                                        adcs_cal = curva_salva.get('adcs_calibracao', [])
-                                        doses_cal = curva_salva.get('doses_calibracao', [])
-                                        adc_aumenta = False
-                                        if len(adcs_cal) >= 2 and len(doses_cal) >= 2:
-                                            adc_aumenta = adcs_cal[-1] > adcs_cal[0] and doses_cal[-1] > doses_cal[0]
+                            if st.button("🔬 GERAR MAPA DE DOSE", type="primary", key="btn_mapa_m"):
+                                with st.spinner("Calculando mapa de dose..."):
+                                    # Determinar direcao do scanner a partir dos dados de calibracao
+                                    adcs_cal = curva_salva.get('adcs_calibracao', [])
+                                    doses_cal = curva_salva.get('doses_calibracao', [])
+                                    adc_aumenta = False
+                                    if len(adcs_cal) >= 2 and len(doses_cal) >= 2:
+                                        adc_aumenta = adcs_cal[-1] > adcs_cal[0] and doses_cal[-1] > doses_cal[0]
                                         
-                                        # Criar curva dict para a funcao
-                                        curva_dict = {}
-                                        if 'a' in curva_salva:
-                                            curva_dict = {'a': curva_salva['a'], 'b': curva_salva['b'], 
-                                                         'c': curva_salva['c'], 'equation': resultado['equation'], 
-                                                         'r2': resultado['r2']}
-                                        else:
-                                            curva_dict = {'K1': curva_salva['K1'], 'K2': curva_salva['K2'],
-                                                         'equation': resultado['equation'], 'r2': resultado['r2']}
+                                    # Criar curva dict para a funcao
+                                    curva_dict = {}
+                                    if 'a' in curva_salva:
+                                        curva_dict = {'a': curva_salva['a'], 'b': curva_salva['b'], 
+                                                     'c': curva_salva['c'], 'equation': resultado['equation'], 
+                                                     'r2': resultado['r2']}
+                                    else:
+                                        curva_dict = {'K1': curva_salva['K1'], 'K2': curva_salva['K2'],
+                                                     'equation': resultado['equation'], 'r2': resultado['r2']}
                                         
-                                        # Gerar mapa
-                                        mapa_dose_m = gerar_mapa_dose(filme_mapa_m, pv0, curva_dict, adc_aumenta)
+                                    # Gerar mapa
+                                    mapa_dose_m = gerar_mapa_dose(filme_mapa_m, pv0, curva_dict, adc_aumenta)
                                         
-                                        # Estatisticas
-                                        dose_max_m = float(np.max(mapa_dose_m))
-                                        dose_media_m = float(np.mean(mapa_dose_m[mapa_dose_m > 0]))
-                                        dose_min_m = float(np.min(mapa_dose_m[mapa_dose_m > 0]))
+                                    # Estatisticas
+                                    dose_max_m = float(np.max(mapa_dose_m))
+                                    dose_media_m = float(np.mean(mapa_dose_m[mapa_dose_m > 0]))
+                                    dose_min_m = float(np.min(mapa_dose_m[mapa_dose_m > 0]))
                                         
-                                        st.subheader("Estatísticas do Mapa")
-                                        col_e1, col_e2, col_e3 = st.columns(3)
-                                        with col_e1:
-                                            st.metric("Dose Máxima", f"{dose_max_m:.3f} Gy")
-                                        with col_e2:
-                                            st.metric("Dose Média", f"{dose_media_m:.3f} Gy")
-                                        with col_e3:
-                                            st.metric("Dose Mínima", f"{dose_min_m:.3f} Gy")
+                                    st.subheader("Estatísticas do Mapa")
+                                    col_e1, col_e2, col_e3 = st.columns(3)
+                                    with col_e1:
+                                        st.metric("Dose Máxima", f"{dose_max_m:.3f} Gy")
+                                    with col_e2:
+                                        st.metric("Dose Média", f"{dose_media_m:.3f} Gy")
+                                    with col_e3:
+                                        st.metric("Dose Mínima", f"{dose_min_m:.3f} Gy")
                                         
-                                        # Mapa com isodoses
-                                        st.subheader("Mapa de Dose com Isodoses")
-                                        img_mapa_iso_m = gerar_mapa_isodose(mapa_dose_m, dose_prescrita_m, 
-                                                                           niveis_sel_m, paleta_m, cor_iso_m)
-                                        st.image(img_mapa_iso_m, use_container_width=True)
+                                    # Mapa com isodoses
+                                    st.subheader("Mapa de Dose com Isodoses")
+                                    img_mapa_iso_m = gerar_mapa_isodose(mapa_dose_m, dose_prescrita_m, 
+                                                                       niveis_sel_m, paleta_m, cor_iso_m)
+                                    st.image(img_mapa_iso_m, use_container_width=True)
                                         
-                                        # Legenda
-                                        st.subheader("Legenda das Isodoses")
-                                        df_legenda_m = gerar_legenda_isodose(niveis_sel_m, dose_prescrita_m)
-                                        st.dataframe(df_legenda_m, use_container_width=True, hide_index=True)
+                                    # Legenda
+                                    st.subheader("Legenda das Isodoses")
+                                    df_legenda_m = gerar_legenda_isodose(niveis_sel_m, dose_prescrita_m)
+                                    st.dataframe(df_legenda_m, use_container_width=True, hide_index=True)
                                         
-                                        # Histograma
-                                        st.subheader("Distribuição de Dose")
-                                        fig_hist_m, ax_hist_m = plt.subplots(figsize=(8, 4))
-                                        doses_validas_m = mapa_dose_m[mapa_dose_m > 0].flatten()
-                                        ax_hist_m.hist(doses_validas_m, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
-                                        ax_hist_m.axvline(dose_prescrita_m, color='red', linestyle='--', linewidth=2, label=f'Prescrita: {dose_prescrita_m:.2f} Gy')
-                                        ax_hist_m.set_xlabel('Dose (Gy)', fontsize=11)
-                                        ax_hist_m.set_ylabel('Frequência (pixels)', fontsize=11)
-                                        ax_hist_m.set_title('Histograma de Dose no Filme', fontsize=12, fontweight='bold')
-                                        ax_hist_m.legend()
-                                        ax_hist_m.grid(True, alpha=0.3)
-                                        plt.tight_layout()
-                                        buf_hist_m = io.BytesIO()
-                                        fig_hist_m.savefig(buf_hist_m, format='png', dpi=100, bbox_inches='tight')
-                                        buf_hist_m.seek(0)
-                                        plt.close(fig_hist_m)
-                                        st.image(buf_hist_m, use_container_width=True)
+                                    # Histograma
+                                    st.subheader("Distribuição de Dose")
+                                    fig_hist_m, ax_hist_m = plt.subplots(figsize=(8, 4))
+                                    doses_validas_m = mapa_dose_m[mapa_dose_m > 0].flatten()
+                                    ax_hist_m.hist(doses_validas_m, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+                                    ax_hist_m.axvline(dose_prescrita_m, color='red', linestyle='--', linewidth=2, label=f'Prescrita: {dose_prescrita_m:.2f} Gy')
+                                    ax_hist_m.set_xlabel('Dose (Gy)', fontsize=11)
+                                    ax_hist_m.set_ylabel('Frequência (pixels)', fontsize=11)
+                                    ax_hist_m.set_title('Histograma de Dose no Filme', fontsize=12, fontweight='bold')
+                                    ax_hist_m.legend()
+                                    ax_hist_m.grid(True, alpha=0.3)
+                                    plt.tight_layout()
+                                    buf_hist_m = io.BytesIO()
+                                    fig_hist_m.savefig(buf_hist_m, format='png', dpi=100, bbox_inches='tight')
+                                    buf_hist_m.seek(0)
+                                    plt.close(fig_hist_m)
+                                    st.image(buf_hist_m, use_container_width=True)
 
 # ==================== SIDEBAR ====================
 with st.sidebar:

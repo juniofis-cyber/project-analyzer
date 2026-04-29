@@ -273,15 +273,27 @@ def calcular_nod(filmes_calibracao):
     EBT3/EBT4: NOD = log10(PV0 / PVirradiado) para transmissao padrao
     Se scanner inverte (ADC cresce com dose): NOD = log10(PVirradiado / PV0)
     
-    Usa o filme de dose=0 como PV0, nao adivinha por max/min.
+    Usa o filme de dose=0 como PV0, ou filme marcado como 'filme0' (upload separado).
     """
-    # Encontrar filme de 0 Gy (menor dose)
-    filmes_ordenados_por_dose = sorted(filmes_calibracao, key=lambda f: f['dose'])
-    filme_0 = filmes_ordenados_por_dose[0]
-    pv0 = float(filme_0['filme']['intensidade_roi'])
-    dose_0 = float(filme_0['dose'])
+    # PRIORIDADE 1: filme marcado como 'filme0' (upload separado de filme 0 Gy)
+    filme_0_especial = None
+    for f in filmes_calibracao:
+        if f.get('filme', {}).get('filme0', False):
+            filme_0_especial = f
+            break
     
-    # VALIDACAO CRITICA: o filme de menor dose DEVE ser ~0 Gy
+    # PRIORIDADE 2: filme de menor dose (= 0 Gy)
+    if filme_0_especial is not None:
+        filme_0 = filme_0_especial
+        pv0 = float(filme_0['filme']['intensidade_roi'])
+        dose_0 = 0.0  # Forcar dose zero para upload separado
+    else:
+        filmes_ordenados_por_dose = sorted(filmes_calibracao, key=lambda f: f['dose'])
+        filme_0 = filmes_ordenados_por_dose[0]
+        pv0 = float(filme_0['filme']['intensidade_roi'])
+        dose_0 = float(filme_0['dose'])
+    
+    # VALIDACAO CRITICA: o filme de referencia DEVE ter dose ~0 Gy
     # Se nao houver filme de 0 Gy, o NOD nao pode ser calculado corretamente
     if dose_0 > 0.001:
         info = {
@@ -676,11 +688,50 @@ if metodologia == "Um unico filme":
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
             
+            # Upload separado do filme de 0 Gy (nao irradiado / referencia)
+            st.markdown("---")
+            st.subheader("➕ Filme de Referência (0 Gy)")
+            st.info("Se o filme de 0 Gy (nao irradiado) nao foi detectado automaticamente na imagem acima, faca o upload dele separadamente.")
+            
+            tem_filme_0 = st.checkbox("Fazer upload do filme de 0 Gy separado", value=False, key="chk_filme0")
+            
+            if tem_filme_0:
+                arq_filme0 = st.file_uploader("Envie a imagem do filme de 0 Gy (nao irradiado)", type=['tif','tiff','png','jpg','jpeg'], key="upload_filme0")
+                if arq_filme0:
+                    img_f0, info_f0 = carregar_imagem_preservando_bits(arq_filme0)
+                    st.info(f"Filme 0 Gy: {info_f0['dtype']} | shape{info_f0['shape']} | range [{info_f0['min_val']:.1f}, {info_f0['max_val']:.1f}]")
+                    
+                    # Detectar filme na imagem separada
+                    filme0_cortado = cortar_filme_unico(img_f0)
+                    if filme0_cortado is not None:
+                        # Calcular ADC (canal vermelho) do filme 0 Gy
+                        red_f0 = canal_vermelho(filme0_cortado)
+                        adc_f0 = float(np.mean(red_f0))
+                        
+                        # Adicionar como regiao especial na lista
+                        novo_id = max([r['id'] for r in reg_ord]) + 1 if reg_ord else 1
+                        regiao_f0 = {
+                            'id': novo_id,
+                            'area': filme0_cortado.shape[0] * filme0_cortado.shape[1],
+                            'intensidade': adc_f0,
+                            'centro': (filme0_cortado.shape[1]//2, filme0_cortado.shape[0]//2),
+                            'bbox': (0, 0, filme0_cortado.shape[1], filme0_cortado.shape[0]),
+                            'razao': 1.0,
+                            'roi_px': min(filme0_cortado.shape[0], filme0_cortado.shape[1]),
+                            'roi_cm': min(filme0_cortado.shape[0], filme0_cortado.shape[1]) / (dpi_s / 2.54) if dpi_s > 0 else 0,
+                            'intensidade_roi': adc_f0,
+                            'filme0': True  # marcador especial
+                        }
+                        reg_ord.append(regiao_f0)
+                        st.success(f"Filme 0 Gy adicionado! Regiao {novo_id} | ADC = {adc_f0:.1f}")
+                        st.image(normalizar_para_display(filme0_cortado), caption=f"Filme 0 Gy detectado (ADC = {adc_f0:.1f})", use_container_width=True)
+            
             # ==================== CURVA DE CALIBRACAO (MODO UNICO FILME) ====================
             st.markdown("---")
             st.header("📊 Curva de Calibração")
             
             st.error("🚨 **OBRIGATORIO: Voce DEVE incluir uma regiao com DOSE = 0 Gy (filme NAO IRRADIADO).** Sem o filme de referencia, o NOD nao pode ser calculado corretamente.")
+            st.info("💡 **Dica:** Se o filme de 0 Gy nao apareceu na deteccao automatica (filme transparente), use a secao 'Filme de Referencia (0 Gy)' abaixo para fazer upload separado.")
             st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos.")
             st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
             st.info(f"Total de regioes detectadas: {len(reg_ord)}")
@@ -1107,7 +1158,8 @@ else:
                     # VERIFICACAO CRITICA: existe filme de 0 Gy?
                     if nod_info.get('erro', False):
                         st.error("🚨 " + nod_info['erro_msg'])
-                        st.error("⚠️ SOLUCAO: Marque a checkbox 'Usar' para um filme com Dose = 0 Gy (nao irradiado) e tente novamente.")
+                        st.error("⚠️ O filme de 0 Gy (nao irradiado) eh transparente e o algoritmo automatico pode nao detecta-lo.")
+                        st.info("💡 SOLUCAO: Use a secao 'Adicionar Filme Nao Detectado Manualmente' acima para adicionar o filme de 0 Gy. Digite as coordenadas (x, y, largura, altura) do filme transparente na imagem.")
                         st.stop()
                     
                     nods = np.array([f['nod'] for f in filmes_calibracao])
@@ -1244,7 +1296,7 @@ else:
                 # Download da curva
                 curva_json = json.dumps(resultado['curva_data'], indent=2)
                 st.download_button(
-                    "💾 Download Curva de Calibração (.json)",
+                    "Download Curva de Calibracao (.json)",
                     curva_json,
                     f"curva_calibracao_{tipo_filme}.json",
                     "application/json"

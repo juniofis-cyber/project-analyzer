@@ -19,6 +19,29 @@ st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide
 def mm_to_pixels(mm, dpi):
     return int((mm / 25.4) * dpi)
 
+def visualizar_filme0_preview(img_array):
+    """
+    Cria um preview do filme 0 Gy com fundo escuro para contraste.
+    Filmes transparentes (0 Gy) sao quase invisiveis em fundo branco.
+    """
+    # Canal vermelho para visualizacao
+    if len(img_array.shape) == 3:
+        gray = img_array[:,:,0].astype(np.float64)
+    else:
+        gray = img_array.astype(np.float64)
+    
+    # Encontrar o filme na imagem (regiao mais clara no centro)
+    h, w = gray.shape
+    
+    # Criar fundo escuro (cinza escuro)
+    fundo = np.full((h + 40, w + 40), 30.0, dtype=np.float64)
+    
+    # Colocar o filme no centro do fundo
+    fundo[20:20+h, 20:20+w] = gray
+    
+    # Normalizar para display
+    return normalizar_para_display(fundo)
+
 def calcular_roi_quadrado(largura_px, altura_px, dpi):
     px_por_cm = dpi / 2.54
     largura_cm = largura_px / px_por_cm
@@ -460,27 +483,33 @@ def _calcular_dose_curva(nod, curva):
         return curva['a'] * nod**2 + curva['b'] * nod + curva['c']
 
 def gerar_grafico_nod_dose(filmes, curva, tipo_filme):
-    """Grafico NOD vs Dose (padrao cientifico)"""
+    """
+    Grafico Dose vs NOD (padrao cientifico dose-resposta).
+    Eixo X = Dose (Gy), Eixo Y = NOD (resposta do filme).
+    """
     nods = np.array([f['nod'] for f in filmes])
     doses = np.array([f['dose'] for f in filmes])
     
     fig, ax = plt.subplots(figsize=(10, 7))
-    ax.scatter(nods, doses, color='red', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
+    # Pontos medidos: Dose no X, NOD no Y
+    ax.scatter(doses, nods, color='red', s=150, label='Dados medidos', zorder=5, edgecolors='black', linewidth=1)
     
+    # Curva ajustada: calcular grid de NOD -> Dose, plotar (Dose, NOD)
     nods_fit = np.linspace(0, max(nods)*1.15, 200)
     doses_fit = [_calcular_dose_curva(n, curva) for n in nods_fit]
     
-    ax.plot(nods_fit, doses_fit, 'b-', linewidth=2.5, label='Curva ajustada', zorder=3)
+    ax.plot(doses_fit, nods_fit, 'b-', linewidth=2.5, label='Curva ajustada', zorder=3)
     
+    # Linhas de erro verticais
     for i in range(len(nods)):
         dose_na_curva = _calcular_dose_curva(nods[i], curva)
-        ax.plot([nods[i], nods[i]], [doses[i], dose_na_curva], 'g--', alpha=0.5, linewidth=1)
+        ax.plot([doses[i], dose_na_curva], [nods[i], nods[i]], 'g--', alpha=0.5, linewidth=1)
     
-    ax.set_xlabel('NOD (Net Optical Density)', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Dose (Gy)', fontsize=14, fontweight='bold')
-    ax.set_title(f'Curva de Calibração {tipo_filme} - NOD vs Dose\n{curva["equation"]}\nR² = {curva["r2"]:.6f}', 
+    ax.set_xlabel('Dose (Gy)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('NOD (Net Optical Density)', fontsize=14, fontweight='bold')
+    ax.set_title(f'Curva de Calibração {tipo_filme} - Dose vs NOD\n{curva["equation"]}\nR² = {curva["r2"]:.6f}', 
                  fontsize=13, fontweight='bold')
-    ax.legend(fontsize=12, loc='upper left')
+    ax.legend(fontsize=12, loc='lower right')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.axhline(y=0, color='k', linewidth=0.5)
     ax.axvline(x=0, color='k', linewidth=0.5)
@@ -706,9 +735,21 @@ if metodologia == "Um unico filme":
                     # Detectar filme na imagem separada
                     filme0_cortado = cortar_filme_unico(img_f0)
                     if filme0_cortado is not None:
-                        # Calcular ADC (canal vermelho) do filme 0 Gy
+                        # Calcular ROI proporcional no centro do filme 0 Gy
+                        h, w = filme0_cortado.shape[:2]
+                        roi_px, roi_cm = calcular_roi_quadrado(w, h, dpi_s)
+                        cx = w // 2
+                        cy = h // 2
+                        meio_roi = roi_px // 2
+                        x1 = max(0, cx - meio_roi)
+                        y1 = max(0, cy - meio_roi)
+                        x2 = min(w, cx + meio_roi)
+                        y2 = min(h, cy + meio_roi)
+                        
+                        # Calcular ADC (canal vermelho) no ROI
                         red_f0 = canal_vermelho(filme0_cortado)
-                        adc_f0 = float(np.mean(red_f0))
+                        roi_pixels = red_f0[y1:y2, x1:x2]
+                        adc_f0 = float(np.mean(roi_pixels))
                         
                         # Adicionar como regiao especial na lista
                         novo_id = max([r['id'] for r in reg_ord]) + 1 if reg_ord else 1
@@ -716,17 +757,18 @@ if metodologia == "Um unico filme":
                             'id': novo_id,
                             'area': filme0_cortado.shape[0] * filme0_cortado.shape[1],
                             'intensidade': adc_f0,
-                            'centro': (filme0_cortado.shape[1]//2, filme0_cortado.shape[0]//2),
-                            'bbox': (0, 0, filme0_cortado.shape[1], filme0_cortado.shape[0]),
+                            'centro': (cx, cy),
+                            'bbox': (0, 0, w, h),
                             'razao': 1.0,
-                            'roi_px': min(filme0_cortado.shape[0], filme0_cortado.shape[1]),
-                            'roi_cm': min(filme0_cortado.shape[0], filme0_cortado.shape[1]) / (dpi_s / 2.54) if dpi_s > 0 else 0,
+                            'roi_px': roi_px,
+                            'roi_cm': roi_cm,
                             'intensidade_roi': adc_f0,
-                            'filme0': True  # marcador especial
+                            'filme0': True,  # marcador especial
+                            'roi_bbox': (x1, y1, x2-x1, y2-y1)
                         }
                         reg_ord.append(regiao_f0)
-                        st.success(f"Filme 0 Gy adicionado! Regiao {novo_id} | ADC = {adc_f0:.1f}")
-                        st.image(normalizar_para_display(filme0_cortado), caption=f"Filme 0 Gy detectado (ADC = {adc_f0:.1f})", use_container_width=True)
+                        st.success(f"Filme 0 Gy adicionado! Regiao {novo_id} | ADC = {adc_f0:.1f} | ROI = {roi_cm:.1f} cm")
+                        st.image(visualizar_filme0_preview(filme0_cortado), caption=f"Filme 0 Gy detectado (ADC = {adc_f0:.1f})", use_container_width=True)
             
             # ==================== CURVA DE CALIBRACAO (MODO UNICO FILME) ====================
             st.markdown("---")
@@ -758,17 +800,40 @@ if metodologia == "Um unico filme":
             filmes_calibracao = []
             
             for i, regiao in enumerate(reg_ord):
-                if usar_adc_manual:
-                    col_check, col_info, col_adc, col_dose = st.columns([1, 2, 2, 2])
+                # Extrair miniatura da regiao
+                x, y, w, h = regiao['bbox']
+                x = max(0, x); y = max(0, y)
+                x2 = min(img_filme.shape[1], x + w)
+                y2 = min(img_filme.shape[0], y + h)
+                miniatura = img_filme[y:y2, x:x2]
+                
+                # Converter miniatura para display
+                if miniatura.size > 0:
+                    mini_disp = normalizar_para_display(miniatura)
+                    # Reduzir para thumbnail (~80px de largura)
+                    thumb_h = int(80 * miniatura.shape[0] / miniatura.shape[1])
+                    mini_pil = Image.fromarray(mini_disp).resize((80, max(40, thumb_h)), Image.LANCZOS)
+                    mini_arr = np.array(mini_pil)
                 else:
-                    col_check, col_info, col_dose = st.columns([1, 3, 2])
-                    
+                    mini_arr = np.zeros((40, 80), dtype=np.uint8)
+                
+                if usar_adc_manual:
+                    col_thumb, col_check, col_info, col_adc, col_dose = st.columns([1, 1, 2, 2, 2])
+                else:
+                    col_thumb, col_check, col_info, col_dose = st.columns([1, 1, 3, 2])
+                
+                with col_thumb:
+                    st.image(mini_arr, use_container_width=True)
+                
                 with col_check:
                     usar = st.checkbox(f"Usar", key=f"calib_u_{i}")
+                
                 with col_info:
-                    st.markdown(f"**Regiao {regiao['id']}** | ROI: {regiao['roi_cm']:.1f} cm")
+                    eh_filme0 = regiao.get('filme0', False)
+                    label = f"**Filme {regiao['id']}**" + (" *(0 Gy upload)*" if eh_filme0 else "")
+                    st.markdown(label + f" | ROI: {regiao['roi_cm']:.1f} cm")
                     if not usar_adc_manual:
-                        st.caption(f"ADC auto: {regiao['intensidade_roi']:.1f}")
+                        st.caption(f"ADC: {regiao['intensidade_roi']:.1f}")
                 
                 if usar_adc_manual:
                     with col_adc:

@@ -275,6 +275,9 @@ def calcular_nod(filmes_calibracao):
     
     Usa o filme de dose=0 como PV0, ou filme marcado como 'filme0' (upload separado).
     """
+    # Sempre ordenar por dose (usado depois para filme_max tambem)
+    filmes_ordenados_por_dose = sorted(filmes_calibracao, key=lambda f: f['dose'])
+    
     # PRIORIDADE 1: filme marcado como 'filme0' (upload separado de filme 0 Gy)
     filme_0_especial = None
     for f in filmes_calibracao:
@@ -288,7 +291,6 @@ def calcular_nod(filmes_calibracao):
         pv0 = float(filme_0['filme']['intensidade_roi'])
         dose_0 = 0.0  # Forcar dose zero para upload separado
     else:
-        filmes_ordenados_por_dose = sorted(filmes_calibracao, key=lambda f: f['dose'])
         filme_0 = filmes_ordenados_por_dose[0]
         pv0 = float(filme_0['filme']['intensidade_roi'])
         dose_0 = float(filme_0['dose'])

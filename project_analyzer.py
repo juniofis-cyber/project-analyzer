@@ -20,16 +20,15 @@ def mm_to_pixels(mm, dpi):
     return int((mm / 25.4) * dpi)
 
 def visualizar_filme0_preview(img_array):
-    """
-    Preview do filme 0 Gy. Mostra o canal vermelho sem normalizacao relativa.
-    Filmes transparentes aparecem como cinza claro.
-    """
-    if len(img_array.shape) == 3:
-        red = img_array[:,:,0]
+    """Preview do filme 0 Gy em cor real. Converte uint16->uint8 por divisao fixa (/256)."""
+    if len(img_array.shape) == 2:
+        img_rgb = np.stack([img_array]*3, axis=-1)
+    elif len(img_array.shape) == 3 and img_array.shape[2] >= 3:
+        img_rgb = img_array[:,:,:3]
     else:
-        red = img_array
-    # Simplesmente retornar o canal vermelho como uint8 para display
-    return normalizar_para_display(red)
+        img_rgb = img_array
+    img_u8 = (img_rgb.astype(np.float64) / 256.0).clip(0, 255).astype(np.uint8)
+    return img_u8
 
 def calcular_roi_quadrado(largura_px, altura_px, dpi):
     px_por_cm = dpi / 2.54
@@ -796,18 +795,13 @@ if metodologia == "Um unico filme":
                 y2 = min(img_filme.shape[0], y + h)
                 miniatura = img_filme[y:y2, x:x2]
                 
-                # Converter miniatura para display em cor real (sem filtro)
+                # Converter miniatura para display em cor real (uint16->uint8 /256)
                 if miniatura.size > 0:
                     if len(miniatura.shape) == 3:
                         mini_rgb = miniatura[:,:,:3]
                     else:
                         mini_rgb = np.stack([miniatura]*3, axis=-1)
-                    vmax = float(mini_rgb.max())
-                    if vmax > 255:
-                        mini_u8 = (mini_rgb.astype(np.float64) / (vmax / 255.0)).clip(0, 255).astype(np.uint8)
-                    else:
-                        mini_u8 = mini_rgb.astype(np.uint8)
-                    # Reduzir para thumbnail (~80px de largura)
+                    mini_u8 = (mini_rgb.astype(np.float64) / 256.0).clip(0, 255).astype(np.uint8)
                     thumb_h = int(80 * mini_u8.shape[0] / mini_u8.shape[1])
                     mini_pil = Image.fromarray(mini_u8).resize((80, max(40, thumb_h)), Image.LANCZOS)
                     mini_arr = np.array(mini_pil)
@@ -920,16 +914,10 @@ if metodologia == "Um unico filme":
                             st.success(f"✅ Curva ajustada: {curva['equation']}")
                             st.info(f"R² = {curva['r2']:.6f}")
                             
-                            # Graficos
-                            col_g1, col_g2 = st.columns(2)
-                            with col_g1:
-                                st.subheader("NOD vs Dose")
-                                grafico_nod = gerar_grafico_nod_dose(filmes_calibracao, curva, tipo_filme)
-                                st.image(grafico_nod, use_container_width=True)
-                            with col_g2:
-                                st.subheader("ADC vs Dose")
-                                grafico_adc = gerar_grafico_adc_dose(filmes_calibracao, tipo_filme)
-                                st.image(grafico_adc, use_container_width=True)
+                            # Grafico NOD vs Dose (unico)
+                            st.subheader("NOD vs Dose")
+                            grafico_nod = gerar_grafico_nod_dose(filmes_calibracao, curva, tipo_filme)
+                            st.image(grafico_nod, use_container_width=True)
                             
                             # Ordenar filmes por dose (0 Gy = Filme 1)
                             indices_ordenados = np.argsort(doses)

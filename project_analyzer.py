@@ -755,7 +755,7 @@ if metodologia == "Um unico filme":
                             'filme0': True,  # marcador especial
                             'roi_bbox': (x1, y1, x2-x1, y2-y1)
                         }
-                        reg_ord.append(regiao_f0)
+                        reg_ord.insert(0, regiao_f0)  # INSERIR NO INICIO para ser Filme 1
                         st.success(f"Filme 0 Gy adicionado! Regiao {novo_id} | ADC = {adc_f0:.1f} | ROI = {roi_cm:.1f} cm")
                         st.image(visualizar_filme0_preview(filme0_cortado), caption=f"Filme 0 Gy detectado (ADC = {adc_f0:.1f})", use_container_width=True)
             
@@ -789,22 +789,30 @@ if metodologia == "Um unico filme":
             filmes_calibracao = []
             
             for i, regiao in enumerate(reg_ord):
-                # Extrair miniatura da regiao
+                # Extrair miniatura da regiao em RGB real
                 x, y, w, h = regiao['bbox']
                 x = max(0, x); y = max(0, y)
                 x2 = min(img_filme.shape[1], x + w)
                 y2 = min(img_filme.shape[0], y + h)
                 miniatura = img_filme[y:y2, x:x2]
                 
-                # Converter miniatura para display
+                # Converter miniatura para display em cor real (sem filtro)
                 if miniatura.size > 0:
-                    mini_disp = normalizar_para_display(miniatura)
+                    if len(miniatura.shape) == 3:
+                        mini_rgb = miniatura[:,:,:3]
+                    else:
+                        mini_rgb = np.stack([miniatura]*3, axis=-1)
+                    vmax = float(mini_rgb.max())
+                    if vmax > 255:
+                        mini_u8 = (mini_rgb.astype(np.float64) / (vmax / 255.0)).clip(0, 255).astype(np.uint8)
+                    else:
+                        mini_u8 = mini_rgb.astype(np.uint8)
                     # Reduzir para thumbnail (~80px de largura)
-                    thumb_h = int(80 * miniatura.shape[0] / miniatura.shape[1])
-                    mini_pil = Image.fromarray(mini_disp).resize((80, max(40, thumb_h)), Image.LANCZOS)
+                    thumb_h = int(80 * mini_u8.shape[0] / mini_u8.shape[1])
+                    mini_pil = Image.fromarray(mini_u8).resize((80, max(40, thumb_h)), Image.LANCZOS)
                     mini_arr = np.array(mini_pil)
                 else:
-                    mini_arr = np.zeros((40, 80), dtype=np.uint8)
+                    mini_arr = np.zeros((40, 80, 3), dtype=np.uint8)
                 
                 if usar_adc_manual:
                     col_thumb, col_check, col_info, col_adc, col_dose = st.columns([1, 1, 2, 2, 2])
@@ -1365,6 +1373,11 @@ else:
                 # Tabela de erros
                 st.subheader("Tabela de Erros")
                 df_erros = resultado['df_erros'].fillna(0.0)
+                # Compatibilidade: renomear colunas antigas e remover ADC
+                if 'Regiao' in df_erros.columns:
+                    df_erros = df_erros.rename(columns={'Regiao': 'Filme'})
+                if 'ADC' in df_erros.columns:
+                    df_erros = df_erros.drop(columns=['ADC'])
                 st.dataframe(df_erros, use_container_width=True, hide_index=True)
                 
                 # Salvar curva na sessao permanente

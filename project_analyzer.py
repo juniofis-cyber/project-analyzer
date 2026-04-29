@@ -622,6 +622,25 @@ if metodologia == "Um unico filme":
                     'centro': regiao['centro'], 'bbox': bbox_ajust, 'razao': regiao['razao']
                 })
             reg_ord = ordenar(regioes_ajust)
+            
+            # Calcular ROI e intensidade do canal vermelho para cada regiao
+            for r in reg_ord:
+                roi_px, roi_cm = calcular_roi_quadrado(r['bbox'][2], r['bbox'][3], dpi_s)
+                r['roi_px'] = roi_px
+                r['roi_cm'] = roi_cm
+                # Calcular intensidade do canal vermelho na ROI
+                h, w = img_filme.shape[:2]
+                cx = int(r['centro'][0])
+                cy = int(r['centro'][1])
+                meio_roi = roi_px // 2
+                x1 = max(0, cx - meio_roi)
+                y1 = max(0, cy - meio_roi)
+                x2 = min(w, cx + meio_roi)
+                y2 = min(h, cy + meio_roi)
+                red = canal_vermelho(img_filme)
+                roi_pixels = red[y1:y2, x1:x2]
+                r['intensidade_roi'] = float(np.mean(roi_pixels))
+            
             img_res = desenhar_marcacoes_original(img_filme, reg_ord, dpi_s)
             st.subheader("Resultado Final")
             st.image(img_res, use_container_width=True)
@@ -630,10 +649,192 @@ if metodologia == "Um unico filme":
                 'Filme': r['id'], 'Area_cm2': round(r['area'] * cm * cm, 2),
                 'Largura_cm': round(r['bbox'][2] * cm, 2),
                 'Altura_cm': round(r['bbox'][3] * cm, 2),
-                'Intensidade_Canal_R': round(r['intensidade'], 2), 'Razao': round(r['razao'], 2)
+                'ADC_Canal_R': round(r['intensidade_roi'], 1),
+                'ROI_cm': round(r['roi_cm'], 2),
+                'Razao': round(r['razao'], 2)
             } for r in reg_ord])
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.download_button("Download CSV", df.to_csv(index=False), "resultado.csv", "text/csv")
+            
+            # ==================== CURVA DE CALIBRACAO (MODO UNICO FILME) ====================
+            st.markdown("---")
+            st.header("📊 Curva de Calibração")
+            
+            st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos.")
+            st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
+            st.info(f"Total de regioes detectadas: {len(reg_ord)}")
+            st.warning("⚠️ Selecione pelo menos 3 regioes de calibração com doses conhecidas")
+            
+            # Unidade
+            unidade = st.radio("Unidade da dose", ["Gy", "cGy"], horizontal=True, key="uni_unico")
+            
+            # Tipo de fitting
+            tipo_fitting = st.radio("Tipo de fitting", 
+                ["Polinomial 2o grau", "Polinomial n (Dosepy)", "Racional (Dosepy/cobaltCorsair)", "Potencia"], 
+                horizontal=True, key="fit_unico",
+                help="Polinomial 2o: Dose=a*NOD²+b*NOD+c | Polinomial n: Dose=a*NOD+b*NOD^n (Dosepy) | Racional: Dose=-c+b/(NOD-a) (Dosepy/cobaltCorsair) | Potencia: Dose=K1*NOD^K2")
+            
+            # Modo manual de ADC
+            usar_adc_manual = st.checkbox("🔧 Usar valores de ADC manualmente (ignorar leitura do scan)", value=False,
+                                          key="adc_manual_unico",
+                                          help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada regiao.")
+            if usar_adc_manual:
+                st.info("Modo manual ativado. Digite os valores de ADC que você obteve do scanner/software de referência.")
+            
+            filmes_calibracao = []
+            
+            for i, regiao in enumerate(reg_ord):
+                if usar_adc_manual:
+                    col_check, col_info, col_adc, col_dose = st.columns([1, 2, 2, 2])
+                else:
+                    col_check, col_info, col_dose = st.columns([1, 3, 2])
+                    
+                with col_check:
+                    usar = st.checkbox(f"Usar", key=f"calib_u_{i}")
+                with col_info:
+                    st.markdown(f"**Regiao {regiao['id']}** | ROI: {regiao['roi_cm']:.1f} cm")
+                    if not usar_adc_manual:
+                        st.caption(f"ADC auto: {regiao['intensidade_roi']:.1f}")
+                
+                if usar_adc_manual:
+                    with col_adc:
+                        adc_manual = st.number_input(f"ADC", min_value=0.0, value=float(regiao['intensidade_roi']), step=1.0, key=f"adc_manual_u_{i}")
+                
+                with col_dose:
+                    dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_u_{i}")
+                
+                if usar:
+                    filme_calib = {
+                        'filme': dict(regiao),
+                        'dose': dose_val,
+                        'id': regiao['id']
+                    }
+                    if usar_adc_manual:
+                        filme_calib['filme']['intensidade_roi'] = adc_manual
+                    filmes_calibracao.append(filme_calib)
+            
+            # Botao gerar curva
+            if st.button("🔬 GERAR CURVA DE CALIBRAÇÃO", type="primary", key="btn_curva_unico"):
+                if len(filmes_calibracao) < 3:
+                    st.error("⚠️ Selecione pelo menos 3 regioes para gerar a curva!")
+                else:
+                    with st.spinner("Calculando curva de calibração..."):
+                        # Converter dose para Gy se necessario
+                        if unidade == "cGy":
+                            for f in filmes_calibracao:
+                                f['dose'] = f['dose'] / 100.0
+                        
+                        # Calcular NOD para TODOS os filmes
+                        pv0, nod_info = calcular_nod(filmes_calibracao)
+                        nods = np.array([f['nod'] for f in filmes_calibracao])
+                        doses = np.array([f['dose'] for f in filmes_calibracao])
+                        adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
+                        
+                        # Info do calculo
+                        st.info(f"**Referência 0 Gy:** ADC = {pv0:.1f} | Dose = {nod_info['dose_0']:.2f} Gy")
+                        st.info(f"**Maior dose:** ADC = {nod_info['pv_max']:.1f} | Dose = {nod_info['dose_max']:.2f} Gy")
+                        
+                        if nod_info['adc_aumenta_com_dose']:
+                            st.success("✅ Scanner detectado: ADC **aumenta** com dose (tipo IBA/refletância). NOD = log10(PV/PV₀)")
+                        else:
+                            st.success("✅ Scanner detectado: ADC **diminui** com dose (transmissão padrão). NOD = log10(PV₀/PV)")
+                        
+                        # Debug table
+                        debug_nods = pd.DataFrame([{
+                            'Regiao': f['id'],
+                            'Dose_Gy': f['dose'],
+                            'ADC': f['filme']['intensidade_roi'],
+                            'NOD': f['nod'],
+                            'Forma': f.get('nod_info', '')
+                        } for f in filmes_calibracao])
+                        st.subheader("Debug — Cálculo de NOD")
+                        st.dataframe(debug_nods, use_container_width=True, hide_index=True)
+                        
+                        # Verificar monotonicidade
+                        for i in range(1, len(filmes_calibracao)):
+                            if nods[i] < nods[i-1] and doses[i] > doses[i-1]:
+                                st.warning(f"⚠️ NOD da regiao {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < regiao anterior ({nods[i-1]:.4f}) apesar de dose maior.")
+                        
+                        # Escolher fitting
+                        if tipo_fitting == "Polinomial 2o grau":
+                            curva = fitting_polinomial2(nods, doses)
+                        elif tipo_fitting == "Polinomial n (Dosepy)":
+                            curva = fitting_polinomial_n(nods, doses)
+                        elif tipo_fitting == "Racional (Dosepy/cobaltCorsair)":
+                            curva = fitting_racional(nods, doses)
+                        else:
+                            curva = fitting_potencia(nods, doses)
+                        
+                        if curva:
+                            # Calcular doses preditas
+                            doses_pred = np.array([_calcular_dose_curva(n, curva) for n in nods])
+                            
+                            st.success(f"✅ Curva ajustada: {curva['equation']}")
+                            st.info(f"R² = {curva['r2']:.6f}")
+                            
+                            # Graficos
+                            col_g1, col_g2 = st.columns(2)
+                            with col_g1:
+                                st.subheader("NOD vs Dose")
+                                grafico_nod = gerar_grafico_nod_dose(filmes_calibracao, curva, tipo_filme)
+                                st.image(grafico_nod, use_container_width=True)
+                            with col_g2:
+                                st.subheader("ADC vs Dose")
+                                grafico_adc = gerar_grafico_adc_dose(filmes_calibracao, tipo_filme)
+                                st.image(grafico_adc, use_container_width=True)
+                            
+                            # Tabela de erros
+                            st.subheader("Tabela de Erros")
+                            erros_gy = doses_pred - doses
+                            erros_pct = []
+                            for i in range(len(doses)):
+                                if doses[i] > 0.001:
+                                    erros_pct.append(float(abs((doses_pred[i] - doses[i]) / doses[i] * 100)))
+                                else:
+                                    erros_pct.append(0.0)
+                            
+                            dados_tabela = []
+                            for i in range(len(filmes_calibracao)):
+                                dados_tabela.append({
+                                    'Regiao': int(filmes_calibracao[i]['id']),
+                                    'NOD': float(nods[i]),
+                                    'ADC': float(adcs[i]),
+                                    'Dose_Real_Gy': float(doses[i]),
+                                    'Dose_Predita_Gy': float(doses_pred[i]),
+                                    'Desvio_Gy': float(erros_gy[i]),
+                                    'Erro_%': float(erros_pct[i])
+                                })
+                            
+                            df_erros = pd.DataFrame(dados_tabela)
+                            st.dataframe(df_erros, use_container_width=True, hide_index=True)
+                            
+                            # Download
+                            st.download_button("Download CSV (erros)", df_erros.to_csv(index=False), "erros_calibracao.csv", "text/csv")
+                            
+                            # Salvar na sessao
+                            resultado = {
+                                'tipo_filme': tipo_filme,
+                                'curva': curva,
+                                'filmes': filmes_calibracao,
+                                'df_erros': df_erros
+                            }
+                            st.session_state['curva_calibracao'] = resultado
+                            st.success("✅ Curva salva na sessão! Vá para 'Vários filmes' para usar esta curva.")
+                            
+                            # Download JSON
+                            curva_json = {
+                                'tipo_filme': tipo_filme,
+                                'curva': curva,
+                                'tipo_fitting': tipo_fitting
+                            }
+                            st.download_button("📥 Download curva (.json)", json.dumps(curva_json, indent=2), "curva_calibracao.json", "application/json")
+            
+            # Mostrar curva salva se existir
+            if 'curva_calibracao' in st.session_state:
+                st.markdown("---")
+                st.subheader("Curva Salva na Sessão")
+                c = st.session_state['curva_calibracao']
+                st.info(f"Tipo: {c['tipo_filme']} | Equação: {c['curva']['equation']} | R²: {c['curva']['r2']:.4f}")
 
 # ==================== MODO VARIOS FILMES ====================
 

@@ -21,26 +21,15 @@ def mm_to_pixels(mm, dpi):
 
 def visualizar_filme0_preview(img_array):
     """
-    Cria um preview do filme 0 Gy com fundo escuro para contraste.
-    Filmes transparentes (0 Gy) sao quase invisiveis em fundo branco.
+    Preview do filme 0 Gy. Mostra o canal vermelho sem normalizacao relativa.
+    Filmes transparentes aparecem como cinza claro.
     """
-    # Canal vermelho para visualizacao
     if len(img_array.shape) == 3:
-        gray = img_array[:,:,0].astype(np.float64)
+        red = img_array[:,:,0]
     else:
-        gray = img_array.astype(np.float64)
-    
-    # Encontrar o filme na imagem (regiao mais clara no centro)
-    h, w = gray.shape
-    
-    # Criar fundo escuro (cinza escuro)
-    fundo = np.full((h + 40, w + 40), 30.0, dtype=np.float64)
-    
-    # Colocar o filme no centro do fundo
-    fundo[20:20+h, 20:20+w] = gray
-    
-    # Normalizar para display
-    return normalizar_para_display(fundo)
+        red = img_array
+    # Simplesmente retornar o canal vermelho como uint8 para display
+    return normalizar_para_display(red)
 
 def calcular_roi_quadrado(largura_px, altura_px, dpi):
     px_por_cm = dpi / 2.54
@@ -885,21 +874,26 @@ if metodologia == "Um unico filme":
                         else:
                             st.success("✅ Scanner detectado: ADC **diminui** com dose (transmissão padrão). NOD = log10(PV₀/PV)")
                         
+                        # Ordenar filmes de calibração por dose para tabela e graficos
+                        filmes_calibracao.sort(key=lambda f: f['dose'])
+                        nods = np.array([f['nod'] for f in filmes_calibracao])
+                        doses = np.array([f['dose'] for f in filmes_calibracao])
+                        adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
+                        
                         # Debug table
                         debug_nods = pd.DataFrame([{
-                            'Regiao': f['id'],
+                            'Filme': f"Filme {i+1}",
                             'Dose_Gy': f['dose'],
-                            'ADC': f['filme']['intensidade_roi'],
                             'NOD': f['nod'],
                             'Forma': f.get('nod_info', '')
-                        } for f in filmes_calibracao])
-                        st.subheader("Debug — Cálculo de NOD")
+                        } for i, f in enumerate(filmes_calibracao)])
+                        st.subheader("Debug — Calculo de NOD")
                         st.dataframe(debug_nods, use_container_width=True, hide_index=True)
                         
                         # Verificar monotonicidade
                         for i in range(1, len(filmes_calibracao)):
                             if nods[i] < nods[i-1] and doses[i] > doses[i-1]:
-                                st.warning(f"⚠️ NOD da regiao {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < regiao anterior ({nods[i-1]:.4f}) apesar de dose maior.")
+                                st.warning(f"⚠️ NOD do {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < filme anterior ({nods[i-1]:.4f}) apesar de dose maior.")
                         
                         # Escolher fitting
                         if tipo_fitting == "Polinomial 2o grau":
@@ -929,24 +923,30 @@ if metodologia == "Um unico filme":
                                 grafico_adc = gerar_grafico_adc_dose(filmes_calibracao, tipo_filme)
                                 st.image(grafico_adc, use_container_width=True)
                             
+                            # Ordenar filmes por dose (0 Gy = Filme 1)
+                            indices_ordenados = np.argsort(doses)
+                            nods_ord = nods[indices_ordenados]
+                            doses_ord = doses[indices_ordenados]
+                            doses_pred_ord = doses_pred[indices_ordenados]
+                            adcs_ord = adcs[indices_ordenados]
+                            
                             # Tabela de erros
                             st.subheader("Tabela de Erros")
-                            erros_gy = doses_pred - doses
+                            erros_gy = doses_pred_ord - doses_ord
                             erros_pct = []
-                            for i in range(len(doses)):
-                                if doses[i] > 0.001:
-                                    erros_pct.append(float(abs((doses_pred[i] - doses[i]) / doses[i] * 100)))
+                            for i in range(len(doses_ord)):
+                                if doses_ord[i] > 0.001:
+                                    erros_pct.append(float(abs((doses_pred_ord[i] - doses_ord[i]) / doses_ord[i] * 100)))
                                 else:
                                     erros_pct.append(0.0)
                             
                             dados_tabela = []
                             for i in range(len(filmes_calibracao)):
                                 dados_tabela.append({
-                                    'Regiao': int(filmes_calibracao[i]['id']),
-                                    'NOD': float(nods[i]),
-                                    'ADC': float(adcs[i]),
-                                    'Dose_Real_Gy': float(doses[i]),
-                                    'Dose_Predita_Gy': float(doses_pred[i]),
+                                    'Filme': f"Filme {i+1}",
+                                    'NOD': float(nods_ord[i]),
+                                    'Dose_Real_Gy': float(doses_ord[i]),
+                                    'Dose_Predita_Gy': float(doses_pred_ord[i]),
                                     'Desvio_Gy': float(erros_gy[i]),
                                     'Erro_%': float(erros_pct[i])
                                 })
@@ -1242,21 +1242,26 @@ else:
                     else:
                         st.success("✅ Scanner detectado: ADC **diminui** com dose (transmissão padrão). NOD = log10(PV₀/PV)")
                     
+                    # Ordenar filmes de calibração por dose para tabela e graficos
+                    filmes_calibracao.sort(key=lambda f: f['dose'])
+                    nods = np.array([f['nod'] for f in filmes_calibracao])
+                    doses = np.array([f['dose'] for f in filmes_calibracao])
+                    adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
+                    
                     # Mostrar tabela de NODs para debug
                     debug_nods = pd.DataFrame([{
-                        'Filme': f['id'],
+                        'Filme': f"Filme {i+1}",
                         'Dose_Gy': f['dose'],
-                        'ADC': f['filme']['intensidade_roi'],
                         'NOD': f['nod'],
                         'Forma': f.get('nod_info', '')
-                    } for f in filmes_calibracao])
-                    st.subheader("Debug — Cálculo de NOD")
+                    } for i, f in enumerate(filmes_calibracao)])
+                    st.subheader("Debug — Calculo de NOD")
                     st.dataframe(debug_nods, use_container_width=True, hide_index=True)
                     
                     # Verificar se NODs são monotonicos crescentes
                     for i in range(1, len(filmes_calibracao)):
                         if nods[i] < nods[i-1] and doses[i] > doses[i-1]:
-                            st.warning(f"⚠️ NOD do filme {filmes_calibracao[i]['id']} ({nods[i]:.4f}) < filme anterior ({nods[i-1]:.4f}) apesar de dose maior. Verifique os scans.")
+                            st.warning(f"⚠️ NOD do Filme {i+1} ({nods[i]:.4f}) < Filme {i} ({nods[i-1]:.4f}) apesar de dose maior. Verifique os scans.")
                     
                     # Escolher fitting (ja definido antes do botao)
                     if tipo_fitting == "Polinomial 2o grau":
@@ -1272,24 +1277,29 @@ else:
                         # Calcular doses preditas
                         doses_pred = np.array([_calcular_dose_curva(n, curva) for n in nods])
                         
+                        # Ordenar por dose (0 Gy = Filme 1)
+                        indices_ordenados = np.argsort(doses)
+                        nods_ord = nods[indices_ordenados]
+                        doses_ord = doses[indices_ordenados]
+                        doses_pred_ord = doses_pred[indices_ordenados]
+                        
                         # Calcular erros com protecao para divisao por zero
-                        erros_gy = doses_pred - doses
+                        erros_gy = doses_pred_ord - doses_ord
                         erros_pct = []
-                        for i in range(len(doses)):
-                            if doses[i] > 0.001:
-                                erros_pct.append(float(abs((doses_pred[i] - doses[i]) / doses[i] * 100)))
+                        for i in range(len(doses_ord)):
+                            if doses_ord[i] > 0.001:
+                                erros_pct.append(float(abs((doses_pred_ord[i] - doses_ord[i]) / doses_ord[i] * 100)))
                             else:
-                                erros_pct.append(0.0)  # Dose ~0 Gy = erro 0%
+                                erros_pct.append(0.0)
                         
                         # Criar DataFrame com dados limpos
                         dados_tabela = []
                         for i in range(len(filmes_calibracao)):
                             dados_tabela.append({
-                                'Filme': int(filmes_calibracao[i]['id']),
-                                'NOD': float(nods[i]),
-                                'ADC': float(adcs[i]),
-                                'Dose_Real_Gy': float(doses[i]),
-                                'Dose_Predita_Gy': float(doses_pred[i]),
+                                'Filme': f"Filme {i+1}",
+                                'NOD': float(nods_ord[i]),
+                                'Dose_Real_Gy': float(doses_ord[i]),
+                                'Dose_Predita_Gy': float(doses_pred_ord[i]),
                                 'Desvio_Gy': float(erros_gy[i]),
                                 'Erro_%': float(erros_pct[i])
                             })

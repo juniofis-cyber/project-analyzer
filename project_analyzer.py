@@ -281,6 +281,24 @@ def calcular_nod(filmes_calibracao):
     pv0 = float(filme_0['filme']['intensidade_roi'])
     dose_0 = float(filme_0['dose'])
     
+    # VALIDACAO CRITICA: o filme de menor dose DEVE ser ~0 Gy
+    # Se nao houver filme de 0 Gy, o NOD nao pode ser calculado corretamente
+    if dose_0 > 0.001:
+        info = {
+            'pv0': pv0,
+            'dose_0': dose_0,
+            'pv_max': 0,
+            'dose_max': 0,
+            'adc_aumenta_com_dose': False,
+            'erro': True,
+            'erro_msg': f"NAO HA FILME DE 0 Gy! O filme de menor dose tem {dose_0:.2f} Gy. E obrigatorio incluir um filme NAO IRRADIADO (0 Gy) como referencia."
+        }
+        # Marcar todos com erro
+        for f in filmes_calibracao:
+            f['nod'] = 0.0
+            f['nod_info'] = 'ERRO: Sem filme de 0 Gy na calibracao'
+        return pv0, info
+    
     # Encontrar filme de maior dose
     filme_max = filmes_ordenados_por_dose[-1]
     pv_max = float(filme_max['filme']['intensidade_roi'])
@@ -294,7 +312,9 @@ def calcular_nod(filmes_calibracao):
         'dose_0': dose_0,
         'pv_max': pv_max,
         'dose_max': dose_max,
-        'adc_aumenta_com_dose': adc_aumenta_com_dose
+        'adc_aumenta_com_dose': adc_aumenta_com_dose,
+        'erro': False,
+        'erro_msg': ''
     }
     
     for f in filmes_calibracao:
@@ -660,10 +680,11 @@ if metodologia == "Um unico filme":
             st.markdown("---")
             st.header("📊 Curva de Calibração")
             
+            st.error("🚨 **OBRIGATORIO: Voce DEVE incluir uma regiao com DOSE = 0 Gy (filme NAO IRRADIADO).** Sem o filme de referencia, o NOD nao pode ser calculado corretamente.")
             st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos.")
             st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
             st.info(f"Total de regioes detectadas: {len(reg_ord)}")
-            st.warning("⚠️ Selecione pelo menos 3 regioes de calibração com doses conhecidas")
+            st.warning("⚠️ Selecione pelo menos 3 regioes de calibração com doses conhecidas, incluindo UMA regiao de 0 Gy.")
             
             # Unidade
             unidade = st.radio("Unidade da dose", ["Gy", "cGy"], horizontal=True, key="uni_unico")
@@ -726,6 +747,13 @@ if metodologia == "Um unico filme":
                         
                         # Calcular NOD para TODOS os filmes
                         pv0, nod_info = calcular_nod(filmes_calibracao)
+                        
+                        # VERIFICACAO CRITICA: existe filme de 0 Gy?
+                        if nod_info.get('erro', False):
+                            st.error("🚨 " + nod_info['erro_msg'])
+                            st.error("⚠️ SOLUCAO: Marque a checkbox 'Usar' para um filme com Dose = 0 Gy (nao irradiado) e tente novamente.")
+                            st.stop()
+                        
                         nods = np.array([f['nod'] for f in filmes_calibracao])
                         doses = np.array([f['dose'] for f in filmes_calibracao])
                         adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])
@@ -984,11 +1012,12 @@ else:
             st.markdown("---")
             st.header("📊 Curva de Calibração")
             
+            st.error("🚨 **OBRIGATORIO: Voce DEVE incluir um filme com DOSE = 0 Gy (filme NAO IRRADIADO).** Sem o filme de referencia, o NOD nao pode ser calculado corretamente.")
             st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos (ADC na faixa de 0-255 em vez de 10.000-60.000).")
             
             st.info(f"Tipo de filme selecionado: **{tipo_filme}**")
             st.info(f"Total de filmes disponíveis: {len(todos_filmes)}")
-            st.warning("⚠️ Selecione pelo menos 3 filmes de calibração com doses conhecidas")
+            st.warning("⚠️ Selecione pelo menos 3 filmes de calibração com doses conhecidas, incluindo UM filme de 0 Gy.")
             
             # Selecionar filmes para calibração
             st.subheader("Selecione os filmes de calibração e informe as doses")
@@ -1074,6 +1103,13 @@ else:
                     
                     # Calcular NOD para TODOS os filmes
                     pv0, nod_info = calcular_nod(filmes_calibracao)
+                    
+                    # VERIFICACAO CRITICA: existe filme de 0 Gy?
+                    if nod_info.get('erro', False):
+                        st.error("🚨 " + nod_info['erro_msg'])
+                        st.error("⚠️ SOLUCAO: Marque a checkbox 'Usar' para um filme com Dose = 0 Gy (nao irradiado) e tente novamente.")
+                        st.stop()
+                    
                     nods = np.array([f['nod'] for f in filmes_calibracao])
                     doses = np.array([f['dose'] for f in filmes_calibracao])
                     adcs = np.array([f['filme']['intensidade_roi'] for f in filmes_calibracao])

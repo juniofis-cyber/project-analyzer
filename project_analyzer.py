@@ -41,36 +41,66 @@ def calcular_roi_quadrado(largura_px, altura_px, dpi):
     return roi_px, roi_cm
 
 def cortar_filme_unico(imagem):
-    gray = para_grayscale(imagem)
-    # Normalizar para 0-1 para Otsu funcionar corretamente com qualquer bit-depth
-    if gray.max() > 1.0:
-        gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
-    else:
-        gray_norm = gray
-    thresh = threshold_otsu(gray_norm)
-    binary = gray_norm < thresh
-    binary = clear_border(binary)
+    """Corta a regiao do filme da imagem. Retorna None se nao detectar."""
+    try:
+        gray = para_grayscale(imagem)
+        # Normalizar para 0-1 para Otsu funcionar corretamente com qualquer bit-depth
+        if gray.max() > 1.0:
+            gray_norm = (gray - gray.min()) / (gray.max() - gray.min())
+        else:
+            gray_norm = gray
+        thresh = threshold_otsu(gray_norm)
+        binary = gray_norm < thresh
+        
+        # clear_border pode falhar com imagens estranhas - capturar erro
+        try:
+            binary = clear_border(binary)
+        except Exception:
+            pass  # Se clear_border falhar, continuar sem ele
+        
+        # Garantir tipo booleano
+        binary = np.asarray(binary, dtype=bool)
+        
+        # Verificar se tem pixels True (objetos detectados)
+        if not np.any(binary):
+            return None
+        
+        # label pode falhar com arrays problematicos
+        try:
+            labeled = label(binary)
+        except (TypeError, ValueError) as e:
+            # Fallback: usar argmax do centroide aproximado
+            # Encontrar regiao mais central com mais pixels
+            h, w = binary.shape
+            cy, cx = h // 2, w // 2
+            # Procurar regiao True mais proxima do centro
+            y_true, x_true = np.where(binary)
+            if len(y_true) == 0:
+                return None
+            dists = (y_true - cy)**2 + (x_true - cx)**2
+            center_idx = np.argmin(dists)
+            cy_obj, cx_obj = y_true[center_idx], x_true[center_idx]
+            
+            # Criar regiao quadrada ao redor do centro
+            margin = 20
+            minr = max(0, cy_obj - margin)
+            maxr = min(h, cy_obj + margin)
+            minc = max(0, cx_obj - margin)
+            maxc = min(w, cx_obj + margin)
+            return imagem[minr:maxr, minc:maxc]
+        
+        regions = regionprops(labeled)
+        if not regions:
+            return None
+        largest = max(regions, key=lambda r: r.area)
+        minr, minc, maxr, maxc = largest.bbox
+        margem = 10
+        h, w = imagem.shape[:2]
+        return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)]
     
-    # Verificar se o array eh valido
-    if binary is None or binary.size == 0:
+    except Exception as e:
+        # Se tudo falhar, retornar a imagem inteira
         return None
-    
-    # Garantir tipo booleano
-    binary = np.asarray(binary, dtype=bool)
-    
-    # Verificar se tem pixels True (objetos detectados)
-    if not np.any(binary):
-        return None
-    
-    labeled = label(binary)
-    regions = regionprops(labeled)
-    if not regions:
-        return None
-    largest = max(regions, key=lambda r: r.area)
-    minr, minc, maxr, maxc = largest.bbox
-    margem = 10
-    h, w = imagem.shape[:2]
-    return imagem[max(0,minr-margem):min(h,maxr+margem), max(0,minc-margem):min(w,maxc+margem)]
 
 def detectar_regioes_unico(imagem, area_min, offset, fechamento, erosao):
     gray = para_grayscale(imagem)

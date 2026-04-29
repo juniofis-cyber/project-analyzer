@@ -693,7 +693,7 @@ def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy'):
         nivel_abs = d_presc * (pct / 100.0)
         if 0 < nivel_abs < np.max(display_map) * 1.5:
             cs = ax.contour(X, Y, display_map, levels=[nivel_abs], colors=cor, linewidths=2.5, alpha=0.9)
-            ax.clabel(cs, inline=True, fontsize=11, fmt=f'{pct}%', colors=cor)
+            ax.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
     ax.set_title('Isodose Map (%)', fontsize=15, fontweight='bold')
     ax.set_xlabel('Pixels X', fontsize=11)
     ax.set_ylabel('Pixels Y', fontsize=11)
@@ -1238,7 +1238,7 @@ if metodologia == "Um unico filme":
                                 X, Y = np.meshgrid(np.arange(w), np.arange(h))
                                 for pct, cor in niveis_cfg:
                                     cs = ax2.contour(X, Y, mapa_pct, levels=[pct], colors=cor, linewidths=2.5)
-                                    ax2.clabel(cs, inline=True, fontsize=11, fmt=f'{pct}%', colors=cor)
+                                    ax2.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
                                 ax2.set_title('Isodose Map', fontsize=14, fontweight='bold')
                                 ax2.set_xlabel('Pixels X', fontsize=11)
                                 ax2.set_ylabel('Pixels Y', fontsize=11)
@@ -1780,7 +1780,7 @@ else:
                                     X_m, Y_m = np.meshgrid(np.arange(w_m), np.arange(h_m))
                                     for pct, cor in niveis_cfg_m:
                                         cs = ax2.contour(X_m, Y_m, mapa_pct_m, levels=[pct], colors=cor, linewidths=2.5)
-                                        ax2.clabel(cs, inline=True, fontsize=11, fmt=f'{pct}%', colors=cor)
+                                        ax2.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
                                     ax2.set_title('Isodose Map', fontsize=14, fontweight='bold')
                                     ax2.set_xlabel('Pixels X', fontsize=11)
                                     ax2.set_ylabel('Pixels Y', fontsize=11)

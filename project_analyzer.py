@@ -671,8 +671,18 @@ def plot_mapa_dose(dose_map, unidade='Gy', paleta='jet'):
     plt.close(fig)
     return buf
 
-def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy'):
-    """Mapa de Isodose: filme em cinza + linhas coloridas 50/75/100/125/150%."""
+def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy',
+                        grossura=2.5, estilo='solido', mostrar_labels=True,
+                        niveis_pct=None):
+    """
+    Mapa de Isodose: filme em cinza + linhas coloridas.
+    
+    Parametros de estilo:
+        grossura: espessura das linhas (0.5 a 5.0)
+        estilo: 'solido' ou 'tracejado'
+        mostrar_labels: True/False para mostrar % sobre as linhas
+        niveis_pct: lista de (percentual, cor, label), default 50/75/100/125/150%
+    """
     fig, ax = plt.subplots(figsize=(10, 9))
     if unidade == 'cGy':
         display_map = dose_map * 100.0
@@ -686,15 +696,41 @@ def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy'):
     fundo_norm = fundo / fmax if fmax > 0 else fundo
     ax.imshow(fundo_norm, cmap='gray', aspect='equal', vmin=0, vmax=1)
     # Isodoses com cores fixas
-    niveis_config = [(50, 'blue'), (75, 'lime'), (100, 'yellow'), (125, 'orange'), (150, 'red')]
+    if niveis_pct is None:
+        niveis_pct = [(50, 'blue', '50%'), (75, 'lime', '75%'), (100, 'yellow', '100%'),
+                      (125, 'orange', '125%'), (150, 'red', '150%')]
     h, w = display_map.shape
     X, Y = np.meshgrid(np.arange(w), np.arange(h))
-    for pct, cor in niveis_config:
+    
+    # Estilo da linha
+    ls = '--' if estilo == 'tracejado' else '-'
+    
+    # Colecionar handles para legenda
+    from matplotlib.lines import Line2D
+    legend_handles = []
+    legend_labels = []
+    
+    for pct, cor, label_txt in niveis_pct:
         nivel_abs = d_presc * (pct / 100.0)
         if 0 < nivel_abs < np.max(display_map) * 1.5:
-            cs = ax.contour(X, Y, display_map, levels=[nivel_abs], colors=cor, linewidths=2.5, alpha=0.9)
-            ax.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
-    ax.set_title('Isodose Map (%)', fontsize=15, fontweight='bold')
+            cs = ax.contour(X, Y, display_map, levels=[nivel_abs],
+                           colors=cor, linewidths=grossura, linestyles=ls, alpha=0.9)
+            # Labels opcionais com espaçamento melhorado
+            if mostrar_labels:
+                ax.clabel(cs, inline=True, fontsize=10, fmt=lambda x, l=label_txt: l,
+                         colors=cor, inline_spacing=12)
+            # Handle para legenda
+            legend_handles.append(Line2D([0], [0], color=cor, lw=grossura, linestyle=ls))
+            legend_labels.append(label_txt)
+    
+    # Legenda separada (fora do gráfico se possível)
+    if legend_handles:
+        ax.legend(legend_handles, legend_labels, loc='upper left',
+                 fontsize=10, framealpha=0.9, edgecolor='white',
+                 title='Isodoses', title_fontsize=11,
+                 bbox_to_anchor=(1.02, 1.0))
+    
+    ax.set_title('Isodose Map', fontsize=14, fontweight='bold', pad=10)
     ax.set_xlabel('Pixels X', fontsize=11)
     ax.set_ylabel('Pixels Y', fontsize=11)
     plt.tight_layout()
@@ -727,9 +763,9 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.1")
-st.markdown("**Corrigido:** tifffile para 16-bit | Fittings Dosepy (polynomial_n, racional) | ADC sem fitting instável")
-st.info("ℹ️ O app agora usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
+st.title("🔬 Project Analyzer v9.2")
+st.markdown("**Novo:** ROI manual | Estilo isodoses (grossura/sólido/tracejado) | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
 metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
@@ -1162,7 +1198,7 @@ if metodologia == "Um unico filme":
                     st.info(f"Referência 0 Gy (PV0): {pv0:.1f}")
 
                     # Upload do filme irradiado para mapear
-                    arq_mapa = st.file_uploader("Envie o filme irradiado para gerar o mapa de dose", 
+                    arq_mapa = st.file_uploader("Envie o filme irradiado para gerar o mapa de dose",
                                                 type=['tif','tiff','png','jpg','jpeg'],
                                                 key="mapa_upload")
 
@@ -1176,13 +1212,38 @@ if metodologia == "Um unico filme":
                             st.error("❌ Filme não detectado. Tente outra imagem.")
                             st.stop()
 
-                        st.success(f"✅ Filme: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
+                        st.success(f"✅ Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
 
-                        # Preview do filme detectado
-                        st.subheader("Filme Detectado")
+                        # ========== ROI MANUAL ==========
+                        st.subheader("✂️ Seleção de Região de Interesse (ROI)")
+                        st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, defina o ROI abaixo. Deixe em branco para usar o filme inteiro.")
+
+                        usar_roi_manual = st.checkbox("Usar ROI manual", value=False, key="chk_roi_u")
+
+                        if usar_roi_manual:
+                            h_fm, w_fm = filme_mapa.shape[:2]
+                            col_rx, col_ry, col_rw, col_rh = st.columns(4)
+                            with col_rx:
+                                roi_x = st.number_input("X (pixels)", min_value=0, max_value=w_fm-1, value=0, step=10, key="roi_x_u")
+                            with col_ry:
+                                roi_y = st.number_input("Y (pixels)", min_value=0, max_value=h_fm-1, value=0, step=10, key="roi_y_u")
+                            with col_rw:
+                                roi_w = st.number_input("Largura", min_value=10, max_value=w_fm, value=w_fm, step=10, key="roi_w_u")
+                            with col_rh:
+                                roi_h = st.number_input("Altura", min_value=10, max_value=h_fm, value=h_fm, step=10, key="roi_h_u")
+
+                            # Aplicar ROI
+                            roi_x2 = min(roi_x + roi_w, w_fm)
+                            roi_y2 = min(roi_y + roi_h, h_fm)
+                            filme_mapa = filme_mapa[roi_y:roi_y2, roi_x:roi_x2]
+                            st.success(f"ROI aplicado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
+
+                        # Preview do filme (com ou sem ROI)
+                        st.subheader("Filme para Análise")
                         st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
 
-                        # Parametros
+                        # ========== PARAMETROS DO MAPA ==========
+                        st.subheader("⚙️ Parâmetros do Mapa")
                         col_p1, col_p2 = st.columns(2)
                         with col_p1:
                             dose_prescrita = st.number_input("Dose prescrita", min_value=0.1, value=10.0, step=0.5)
@@ -1190,6 +1251,16 @@ if metodologia == "Um unico filme":
                             unidade = st.radio("Unidade", ["Gy", "cGy"], horizontal=True, key="uni_mapa")
 
                         paleta = st.selectbox("Paleta de cores", ['jet', 'turbo', 'viridis', 'plasma', 'hot'], index=0)
+
+                        # ========== PARAMETROS DAS ISODOSES ==========
+                        st.subheader("⚙️ Estilo das Isodoses")
+                        col_i1, col_i2, col_i3 = st.columns(3)
+                        with col_i1:
+                            grossura_iso = st.slider("Grossura das linhas", 0.5, 5.0, 2.5, 0.5, key="lw_u")
+                        with col_i2:
+                            estilo_iso = st.radio("Estilo", ["Sólido", "Tracejado"], horizontal=True, key="ls_u")
+                        with col_i3:
+                            mostrar_labels_iso = st.checkbox("Mostrar labels (%)", value=True, key="lbl_u")
 
                         if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa"):
                             with st.spinner("Calculando mapas..."):
@@ -1225,28 +1296,15 @@ if metodologia == "Um unico filme":
                                 plt.close(fig1)
                                 st.image(buf1, use_container_width=True)
 
-                                # MAPA DE ISODOSE (filme + contornos coloridos)
+                                # MAPA DE ISODOSE (filme + contornos coloridos + legenda)
                                 st.subheader("Isodose Map")
-                                fig2, ax2 = plt.subplots(figsize=(10, 9))
-                                # Fundo: filme colorido (canal vermelho em falso-cor)
-                                red = filme_mapa[:,:,0].astype(np.float64) if len(filme_mapa.shape) == 3 else filme_mapa.astype(np.float64)
-                                red_norm = red / red.max() if red.max() > 0 else red
-                                ax2.imshow(red_norm, cmap='gray', aspect='equal', vmin=0, vmax=1)
-                                # Isodoses coloridas fixas
-                                niveis_cfg = [(50, 'blue'), (75, 'lime'), (100, 'yellow'), (125, 'orange'), (150, 'red')]
-                                h, w = mapa_pct.shape
-                                X, Y = np.meshgrid(np.arange(w), np.arange(h))
-                                for pct, cor in niveis_cfg:
-                                    cs = ax2.contour(X, Y, mapa_pct, levels=[pct], colors=cor, linewidths=2.5)
-                                    ax2.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
-                                ax2.set_title('Isodose Map', fontsize=14, fontweight='bold')
-                                ax2.set_xlabel('Pixels X', fontsize=11)
-                                ax2.set_ylabel('Pixels Y', fontsize=11)
-                                plt.tight_layout()
-                                buf2 = io.BytesIO()
-                                fig2.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
-                                buf2.seek(0)
-                                plt.close(fig2)
+                                estilo_linha = 'tracejado' if estilo_iso == "Tracejado" else 'solido'
+                                buf2 = plot_mapa_isodose(
+                                    mapa_dose, filme_mapa,
+                                    dose_prescrita=dose_prescrita, unidade=unidade,
+                                    grossura=grossura_iso, estilo=estilo_linha,
+                                    mostrar_labels=mostrar_labels_iso
+                                )
                                 st.image(buf2, use_container_width=True)
 
                                 # Tabela de isodoses
@@ -1661,14 +1719,13 @@ else:
                     "application/json"
                 )
                 # ==================== MAPA DE DOSE (MODO VARIOS FILMES) ====================
-            # ==================== MAPA DE DOSE (MODO VARIOS FILMES) ====================
             st.markdown("---")
             st.header("🗺️ Mapa de Dose 2D")
 
-            if 'resultado_calibracao' not in st.session_state:
+            if 'resultado_curva' not in st.session_state:
                 st.warning("⚠️ Gere uma curva de calibração primeiro para criar o mapa de dose.")
             else:
-                resultado = st.session_state['resultado_calibracao']
+                resultado = st.session_state['resultado_curva']
                 curva_data = resultado['curva_data']
                 pv0 = curva_data.get('pv0_referencia', None)
 
@@ -1679,7 +1736,7 @@ else:
                     st.info(f"Referência 0 Gy (PV0): {pv0:.1f}")
 
                     # Upload do filme irradiado para mapear
-                    arq_mapa_m = st.file_uploader("Envie o filme irradiado para gerar o mapa de dose", 
+                    arq_mapa_m = st.file_uploader("Envie o filme irradiado para gerar o mapa de dose",
                                                   type=['tif','tiff','png','jpg','jpeg'],
                                                   key="mapa_upload_multi")
 
@@ -1698,7 +1755,7 @@ else:
                             # Selecionar qual filme mapear
                             filme_selecionado = filmes_mapa[0]
                             if len(filmes_mapa) > 1:
-                                opcao_filme = st.selectbox("Selecione o filme para mapear", 
+                                opcao_filme = st.selectbox("Selecione o filme para mapear",
                                                            [f"Filme {i+1}" for i in range(len(filmes_mapa))])
                                 idx_filme = int(opcao_filme.split()[-1]) - 1
                                 filme_selecionado = filmes_mapa[idx_filme]
@@ -1706,17 +1763,52 @@ else:
                             filme_mapa_m = filme_selecionado['imagem']
                             st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
 
+                            # ========== ROI MANUAL ==========
+                            st.subheader("✂️ Seleção de Região de Interesse (ROI)")
+                            st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, defina o ROI abaixo. Deixe em branco para usar o filme inteiro.")
+
+                            usar_roi_manual_m = st.checkbox("Usar ROI manual", value=False, key="chk_roi_m")
+
+                            if usar_roi_manual_m:
+                                h_fm, w_fm = filme_mapa_m.shape[:2]
+                                col_rx, col_ry, col_rw, col_rh = st.columns(4)
+                                with col_rx:
+                                    roi_x_m = st.number_input("X (pixels)", min_value=0, max_value=w_fm-1, value=0, step=10, key="roi_x_m")
+                                with col_ry:
+                                    roi_y_m = st.number_input("Y (pixels)", min_value=0, max_value=h_fm-1, value=0, step=10, key="roi_y_m")
+                                with col_rw:
+                                    roi_w_m = st.number_input("Largura", min_value=10, max_value=w_fm, value=w_fm, step=10, key="roi_w_m")
+                                with col_rh:
+                                    roi_h_m = st.number_input("Altura", min_value=10, max_value=h_fm, value=h_fm, step=10, key="roi_h_m")
+
+                                # Aplicar ROI
+                                roi_x2_m = min(roi_x_m + roi_w_m, w_fm)
+                                roi_y2_m = min(roi_y_m + roi_h_m, h_fm)
+                                filme_mapa_m = filme_mapa_m[roi_y_m:roi_y2_m, roi_x_m:roi_x2_m]
+                                st.success(f"ROI aplicado: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+
                             # Preview do filme
-                            st.subheader("Filme Selecionado")
+                            st.subheader("Filme para Análise")
                             st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
 
-                            # Parametros
+                            # ========== PARAMETROS ==========
+                            st.subheader("⚙️ Parâmetros do Mapa")
                             col_p1, col_p2 = st.columns(2)
                             with col_p1:
                                 dose_prescrita_m = st.number_input("Dose prescrita", min_value=0.1, value=10.0, step=0.5, key="dpres_m")
                             with col_p2:
                                 unidade_m = st.radio("Unidade", ["Gy", "cGy"], horizontal=True, key="uni_mapa_m")
                             paleta_m = st.selectbox("Paleta", ['jet', 'turbo', 'viridis', 'plasma', 'hot'], index=0, key="plt_m")
+
+                            # ========== PARAMETROS DAS ISODOSES ==========
+                            st.subheader("⚙️ Estilo das Isodoses")
+                            col_i1, col_i2, col_i3 = st.columns(3)
+                            with col_i1:
+                                grossura_iso_m = st.slider("Grossura das linhas", 0.5, 5.0, 2.5, 0.5, key="lw_m")
+                            with col_i2:
+                                estilo_iso_m = st.radio("Estilo", ["Sólido", "Tracejado"], horizontal=True, key="ls_m")
+                            with col_i3:
+                                mostrar_labels_iso_m = st.checkbox("Mostrar labels (%)", value=True, key="lbl_m")
 
                             if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa_m"):
                                 with st.spinner("Calculando mapas..."):
@@ -1769,26 +1861,15 @@ else:
                                     plt.close(fig1)
                                     st.image(buf1, use_container_width=True)
 
-                                    # MAPA DE ISODOSE
+                                    # MAPA DE ISODOSE (com legenda e opcoes de estilo)
                                     st.subheader("Isodose Map")
-                                    fig2, ax2 = plt.subplots(figsize=(10, 9))
-                                    red_m = filme_mapa_m[:,:,0].astype(np.float64) if len(filme_mapa_m.shape) == 3 else filme_mapa_m.astype(np.float64)
-                                    red_m_norm = red_m / red_m.max() if red_m.max() > 0 else red_m
-                                    ax2.imshow(red_m_norm, cmap='gray', aspect='equal', vmin=0, vmax=1)
-                                    niveis_cfg_m = [(50, 'blue'), (75, 'lime'), (100, 'yellow'), (125, 'orange'), (150, 'red')]
-                                    h_m, w_m = mapa_pct_m.shape
-                                    X_m, Y_m = np.meshgrid(np.arange(w_m), np.arange(h_m))
-                                    for pct, cor in niveis_cfg_m:
-                                        cs = ax2.contour(X_m, Y_m, mapa_pct_m, levels=[pct], colors=cor, linewidths=2.5)
-                                        ax2.clabel(cs, inline=True, fontsize=11, fmt=lambda x: f'{int(x)}%', colors=cor)
-                                    ax2.set_title('Isodose Map', fontsize=14, fontweight='bold')
-                                    ax2.set_xlabel('Pixels X', fontsize=11)
-                                    ax2.set_ylabel('Pixels Y', fontsize=11)
-                                    plt.tight_layout()
-                                    buf2 = io.BytesIO()
-                                    fig2.savefig(buf2, format='png', dpi=150, bbox_inches='tight')
-                                    buf2.seek(0)
-                                    plt.close(fig2)
+                                    estilo_linha_m = 'tracejado' if estilo_iso_m == "Tracejado" else 'solido'
+                                    buf2 = plot_mapa_isodose(
+                                        mapa_dose_m, filme_mapa_m,
+                                        dose_prescrita=dose_prescrita_m, unidade=unidade_m,
+                                        grossura=grossura_iso_m, estilo=estilo_linha_m,
+                                        mostrar_labels=mostrar_labels_iso_m
+                                    )
                                     st.image(buf2, use_container_width=True)
 
                                     # Tabela

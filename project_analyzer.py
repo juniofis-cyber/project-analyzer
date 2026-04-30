@@ -340,22 +340,22 @@ def desenhar_retangulo_preview(img_array, x, y, w, h, cor=(255, 0, 0), grossura=
 def roi_slider_visual(filme_array, key_prefix="roi"):
     """
     Interface visual de ROI com sliders e preview em tempo real.
-    Mostra a imagem com um retangulo vermelho que se move conforme os sliders.
-    Retorna (filme_cortado, aplicou_roi, info).
+    Salva o filme cortado no session_state quando 'Aplicar ROI' é clicado.
+    Retorna True se o ROI foi aplicado, False caso contrario.
     """
     h, w = filme_array.shape[:2]
     
     st.info("📐 Ajuste os sliders abaixo para definir o retângulo de corte. \
 O preview atualiza automaticamente. Quando estiver satisfeito, clique em **Aplicar ROI**.")
     
-    # Sliders em 2 colunas
+    # Sliders em 2 colunas (passo 1 em 1 pixel)
     col_s1, col_s2 = st.columns(2)
     with col_s1:
-        roi_x = st.slider("X (posição horizontal)", 0, max(0, w - 50), 0, 5, key=f"sl_x_{key_prefix}")
-        roi_w = st.slider("Largura", 10, w, w, 5, key=f"sl_w_{key_prefix}")
+        roi_x = st.slider("X (posição horizontal)", 0, max(0, w - 1), 0, 1, key=f"sl_x_{key_prefix}")
+        roi_w = st.slider("Largura", 10, w, w, 1, key=f"sl_w_{key_prefix}")
     with col_s2:
-        roi_y = st.slider("Y (posição vertical)", 0, max(0, h - 50), 0, 5, key=f"sl_y_{key_prefix}")
-        roi_h = st.slider("Altura", 10, h, h, 5, key=f"sl_h_{key_prefix}")
+        roi_y = st.slider("Y (posição vertical)", 0, max(0, h - 1), 0, 1, key=f"sl_y_{key_prefix}")
+        roi_h = st.slider("Altura", 10, h, h, 1, key=f"sl_h_{key_prefix}")
     
     # Garantir limites
     roi_x = min(roi_x, w - 10)
@@ -372,20 +372,45 @@ O preview atualiza automaticamente. Quando estiver satisfeito, clique em **Aplic
     with col_b1:
         aplicar = st.button("✅ Aplicar ROI", type="primary", key=f"btn_apply_{key_prefix}")
     with col_b2:
-        pular = st.button("⏭️ Usar filme inteiro", key=f"btn_skip_{key_prefix}")
+        resetar = st.button("🔄 Resetar ROI (usar filme inteiro)", key=f"btn_reset_{key_prefix}")
     
-    if pular:
-        return filme_array, False, "Sem ROI. Usando filme inteiro."
+    if resetar:
+        # Limpar ROI do session state
+        ss_key_roi = f"filme_roi_{key_prefix}"
+        ss_key_aplicado = f"roi_aplicado_{key_prefix}"
+        if ss_key_roi in st.session_state:
+            del st.session_state[ss_key_roi]
+        if ss_key_aplicado in st.session_state:
+            del st.session_state[ss_key_aplicado]
+        st.success("🔄 ROI resetado. Usando filme inteiro.")
+        st.rerun()
     
     if aplicar:
         x2 = roi_x + roi_w
         y2 = roi_y + roi_h
         filme_cortado = filme_array[roi_y:y2, roi_x:x2]
-        info = f"ROI: ({roi_x},{roi_y}) -> ({x2},{y2}) | {roi_w} x {roi_h} px"
-        st.success(f"✅ {info}")
-        return filme_cortado, True, info
+        # Salvar no session_state para persistir entre interacoes
+        st.session_state[f"filme_roi_{key_prefix}"] = filme_cortado
+        st.session_state[f"roi_aplicado_{key_prefix}"] = True
+        st.success(f"✅ ROI aplicado: ({roi_x},{roi_y}) -> ({x2},{y2}) | {roi_w} x {roi_h} px")
+        st.rerun()
+        return True
     
-    return filme_array, False, "Ajuste os sliders e clique em 'Aplicar ROI'."
+    return False
+
+def get_filme_para_mapa(key_prefix="roi"):
+    """
+    Retorna o filme a ser usado para gerar mapas.
+    Prioridade: filme com ROI aplicado > filme base (sem fundo) > None.
+    """
+    ss_key_roi = f"filme_roi_{key_prefix}"
+    ss_key_base = f"filme_base_{key_prefix}"
+    
+    if ss_key_roi in st.session_state:
+        return st.session_state[ss_key_roi]
+    elif ss_key_base in st.session_state:
+        return st.session_state[ss_key_base]
+    return None
 
 def carregar_imagem_preservando_bits(arquivo):
     """
@@ -885,8 +910,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.6.1")
-st.markdown("**Corrigido:** ROI com sliders + preview | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.7")
+st.markdown("**Corrigido:** ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1344,6 +1369,13 @@ if metodologia == "Um unico filme":
                         filme_mapa = filme_sem_fundo
                         st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
 
+                        # Salvar filme base no session_state (limpa ROI anterior quando novo upload)
+                        st.session_state['filme_base_unico'] = filme_mapa
+                        # Limpar ROI de upload anterior
+                        for k in ['filme_roi_unico', 'roi_aplicado_unico']:
+                            if k in st.session_state:
+                                del st.session_state[k]
+
                         # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
                         st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                         st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
@@ -1351,15 +1383,25 @@ if metodologia == "Um unico filme":
                         usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_u_v96")
 
                         if usar_roi_manual:
-                            filme_mapa, aplicou, info_roi = roi_slider_visual(filme_mapa, key_prefix="unico")
-                            if aplicou:
-                                st.success(f"✅ {info_roi}")
-                            else:
-                                st.info(info_roi)
+                            roi_aplicado = roi_slider_visual(filme_mapa, key_prefix="unico")
+                            if roi_aplicado:
+                                # ROI foi aplicado e salvo no session_state; a função já deu rerun
+                                pass
+
+                        # Obter filme final: ROI cortado (se existir) ou base
+                        filme_final = get_filme_para_mapa("unico")
+                        if filme_final is None:
+                            filme_final = filme_mapa
+
+                        # Mostrar info se ROI está ativo
+                        if 'filme_roi_unico' in st.session_state:
+                            st.success("✅ ROI ativo — o mapa usará apenas a região selecionada.")
+                        else:
+                            st.info("📋 Usando filme inteiro (sem ROI).")
 
                         # Preview final do filme para análise
                         st.subheader("Filme para Análise")
-                        st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
+                        st.image(visualizar_filme0_preview(filme_final), use_container_width=True)
 
                         # ========== PARAMETROS DO MAPA ==========
                         st.subheader("⚙️ Parâmetros do Mapa")
@@ -1383,7 +1425,12 @@ if metodologia == "Um unico filme":
 
                         if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa"):
                             with st.spinner("Calculando mapas..."):
-                                mapa_dose = calcular_mapa_dose(filme_mapa, pv0, curva, adc_aumenta_com_dose)
+                                # SEMPRE usar filme do session_state (persiste mesmo ao mudar parâmetros)
+                                filme_para_mapa = get_filme_para_mapa("unico")
+                                if filme_para_mapa is None:
+                                    filme_para_mapa = filme_mapa
+                                
+                                mapa_dose = calcular_mapa_dose(filme_para_mapa, pv0, curva, adc_aumenta_com_dose)
                                 stats = estatisticas_mapa(mapa_dose, unidade)
 
                                 # Estatisticas
@@ -1419,7 +1466,7 @@ if metodologia == "Um unico filme":
                                 st.subheader("Isodose Map")
                                 estilo_linha = 'tracejado' if estilo_iso == "Tracejado" else 'solido'
                                 buf2 = plot_mapa_isodose(
-                                    mapa_dose, filme_mapa,
+                                    mapa_dose, filme_para_mapa,
                                     dose_prescrita=dose_prescrita, unidade=unidade,
                                     grossura=grossura_iso, estilo=estilo_linha,
                                     mostrar_labels=mostrar_labels_iso
@@ -1890,6 +1937,12 @@ else:
                             filme_mapa_m = filme_sem_fundo_m
                             st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
 
+                            # Salvar filme base no session_state (limpa ROI anterior quando novo upload)
+                            st.session_state['filme_base_multi'] = filme_mapa_m
+                            for k in ['filme_roi_multi', 'roi_aplicado_multi']:
+                                if k in st.session_state:
+                                    del st.session_state[k]
+
                             # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
                             st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                             st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
@@ -1897,15 +1950,24 @@ else:
                             usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v96")
 
                             if usar_roi_manual_m:
-                                filme_mapa_m, aplicou_m, info_roi_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")
-                                if aplicou_m:
-                                    st.success(f"✅ {info_roi_m}")
-                                else:
-                                    st.info(info_roi_m)
+                                roi_aplicado_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")
+                                if roi_aplicado_m:
+                                    pass
+
+                            # Obter filme final: ROI cortado (se existir) ou base
+                            filme_final_m = get_filme_para_mapa("multi")
+                            if filme_final_m is None:
+                                filme_final_m = filme_mapa_m
+
+                            # Mostrar info se ROI está ativo
+                            if 'filme_roi_multi' in st.session_state:
+                                st.success("✅ ROI ativo — o mapa usará apenas a região selecionada.")
+                            else:
+                                st.info("📋 Usando filme inteiro (sem ROI).")
 
                             # Preview final do filme para análise
                             st.subheader("Filme para Análise")
-                            st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
+                            st.image(visualizar_filme0_preview(filme_final_m), use_container_width=True)
 
                             # ========== PARAMETROS ==========
                             st.subheader("⚙️ Parâmetros do Mapa")
@@ -1928,6 +1990,11 @@ else:
 
                             if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa_m"):
                                 with st.spinner("Calculando mapas..."):
+                                    # SEMPRE usar filme do session_state
+                                    filme_para_mapa_m = get_filme_para_mapa("multi")
+                                    if filme_para_mapa_m is None:
+                                        filme_para_mapa_m = filme_mapa_m
+                                    
                                     # Direcao do scanner
                                     adcs_cal = curva_data.get('adcs_calibracao', [])
                                     doses_cal = curva_data.get('doses_calibracao', [])
@@ -1945,7 +2012,7 @@ else:
                                     curva_dict['r2'] = resultado['r2']
                                     curva_dict['type'] = resultado.get('tipo_fitting', 'polynomial2')
 
-                                    mapa_dose_m = calcular_mapa_dose(filme_mapa_m, pv0, curva_dict, adc_aumenta)
+                                    mapa_dose_m = calcular_mapa_dose(filme_para_mapa_m, pv0, curva_dict, adc_aumenta)
                                     stats_m = estatisticas_mapa(mapa_dose_m, unidade_m)
 
                                     # Estatisticas
@@ -1981,7 +2048,7 @@ else:
                                     st.subheader("Isodose Map")
                                     estilo_linha_m = 'tracejado' if estilo_iso_m == "Tracejado" else 'solido'
                                     buf2 = plot_mapa_isodose(
-                                        mapa_dose_m, filme_mapa_m,
+                                        mapa_dose_m, filme_para_mapa_m,
                                         dose_prescrita=dose_prescrita_m, unidade=unidade_m,
                                         grossura=grossura_iso_m, estilo=estilo_linha_m,
                                         mostrar_labels=mostrar_labels_iso_m

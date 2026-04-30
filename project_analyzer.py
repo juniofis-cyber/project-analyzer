@@ -289,15 +289,16 @@ def roi_visual_canvas(filme_array, key_prefix="roi"):
 Se nao desenhar nada, o filme inteiro sera usado.")
     
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # fill semi-transparent orange
+        fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=2,
         stroke_color="#FFA500",
+        background_color="",
         background_image=pil_img,
+        update_streamlit=True,
         drawing_mode="rect",
         key=f"canvas_{key_prefix}",
         width=canvas_width,
         height=canvas_height,
-        update_mode="no_update",
     )
     
     # Extrair retangulo do JSON data
@@ -841,8 +842,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.3")
-st.markdown("**Novo:** ROI visual (clique e arraste) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.4")
+st.markdown("**Novo:** ROI visual corrigido (clique e arraste) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)

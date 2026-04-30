@@ -6,3 +6,4 @@ scikit-image>=0.22.0
 scipy>=1.11.0
 matplotlib>=3.7.0
 tifffile>=2023.0.0
+streamlit-drawable-canvas>=0.9.3

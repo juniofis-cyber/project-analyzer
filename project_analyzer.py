@@ -8,15 +8,6 @@ import tifffile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from streamlit_image_coordinates import streamlit_image_coordinates
-import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
-import io
-import json
-import tifffile
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
@@ -274,134 +265,127 @@ def normalizar_para_display(imagem):
         img_norm = img_float
     return img_norm.clip(0, 255).astype(np.uint8)
 
-def roi_visual_click(filme_array, key_prefix="roi"):
+def remover_fundo_branco(img_array, margem=10):
     """
-    Selecao visual de ROI por clique em 2 pontos na imagem.
-    Ponto 1 = canto superior esquerdo, Ponto 2 = canto inferior direito.
-    Retorna (filme_cortado, aplicou_roi, info).
+    Remove o fundo branco/cinza claro do scanner, deixando apenas a regiao do filme.
+    Scanners tipicamente produzem imagens onde o filme eh mais escuro que o fundo.
+    Retorna a imagem cortada (apenas o filme) com uma pequena margem.
     """
-    # Normalizar imagem para display
-    img_display = normalizar_para_display(filme_array)
+    # Usar canal vermelho para deteccao (padrao AAPM TG-55)
+    if len(img_array.shape) == 3:
+        gray = img_array[:, :, 0].astype(np.float64)
+    else:
+        gray = img_array.astype(np.float64)
+    
+    # Normalizar para 0-1 se necessario
+    if gray.max() > 1.0:
+        gray_norm = (gray - gray.min()) / (gray.max() - gray.min() + 1e-10)
+    else:
+        gray_norm = gray
+    
+    # O filme eh mais ESCURO que o fundo branco do scanner
+    # Usar Otsu para separar filme (escuro) de fundo (claro)
+    try:
+        thresh = threshold_otsu(gray_norm)
+        # Otsu retorna threshold entre fundo claro e filme escuro
+        # filme = pixels < thresh (mais escuros)
+        binary = gray_norm < thresh
+        
+        # Limpar bordas
+        try:
+            binary = clear_border(binary)
+        except Exception:
+            pass
+        
+        # Encontrar maior regiao conectada (o filme)
+        labeled = label(binary)
+        regions = regionprops(labeled)
+        
+        if regions:
+            largest = max(regions, key=lambda r: r.area)
+            minr, minc, maxr, maxc = largest.bbox
+            # Adicionar margem
+            h, w = gray.shape
+            y1 = max(0, minr - margem)
+            x1 = max(0, minc - margem)
+            y2 = min(h, maxr + margem)
+            x2 = min(w, maxc + margem)
+            return img_array[y1:y2, x1:x2], True, (x1, y1, x2-x1, y2-y1)
+    except Exception:
+        pass
+    
+    # Fallback: retornar imagem original
+    return img_array, False, (0, 0, img_array.shape[1], img_array.shape[0])
+
+def desenhar_retangulo_preview(img_array, x, y, w, h, cor=(255, 0, 0), grossura=3):
+    """
+    Desenha um retangulo sobre a imagem para preview do ROI.
+    Retorna array numpy RGB uint8.
+    """
+    img_display = normalizar_para_display(img_array)
     if len(img_display.shape) == 2:
         img_rgb = np.stack([img_display]*3, axis=-1)
     else:
-        img_rgb = img_display[:,:,:3]
+        img_rgb = img_display[:,:,:3].copy()
     
-    h_orig, w_orig = img_rgb.shape[:2]
-    
-    # Criar chaves unicas para session state
-    ss_p1 = f"roi_p1_{key_prefix}"
-    ss_p2 = f"roi_p2_{key_prefix}"
-    ss_step = f"roi_step_{key_prefix}"
-    
-    # Inicializar session state
-    if ss_step not in st.session_state:
-        st.session_state[ss_step] = 1  # Passo 1: aguardando Ponto 1
-        st.session_state[ss_p1] = None
-        st.session_state[ss_p2] = None
-    
-    st.info("🖱️ **Passo 1:** Clique no canto **superior esquerdo** da área desejada. \
-**Passo 2:** Clique no canto **inferior direito**.")
-    
-    step = st.session_state[ss_step]
-    p1 = st.session_state[ss_p1]
-    p2 = st.session_state[ss_p2]
-    
-    # Criar imagem com overlay do retangulo se ja tiver pontos
     pil_img = Image.fromarray(img_rgb)
-    if p1 is not None:
-        draw = ImageDraw.Draw(pil_img)
-        if p2 is not None:
-            # Desenhar retangulo completo
-            draw.rectangle([p1, p2], outline="#FFA500", width=3)
-            # Preenchimento semi-transparente (converter para RGBA)
-            overlay = Image.new('RGBA', pil_img.size, (0, 0, 0, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-            overlay_draw.rectangle([p1, p2], fill=(255, 165, 0, 60))
-            pil_img = pil_img.convert('RGBA')
-            pil_img = Image.alpha_composite(pil_img, overlay)
-        else:
-            # Apenas o primeiro ponto + linha guia
-            draw.ellipse([p1[0]-5, p1[1]-5, p1[0]+5, p1[1]+5], fill="red")
-            draw.text((p1[0]+8, p1[1]-8), "P1", fill="red")
+    draw = ImageDraw.Draw(pil_img)
     
-    # Converter para RGB se necessario (componente espera RGB)
-    if pil_img.mode == 'RGBA':
-        # Criar fundo branco e compor
-        fundo = Image.new('RGB', pil_img.size, (0, 0, 0))
-        fundo.paste(pil_img, mask=pil_img.split()[3])
-        pil_img = fundo
+    x2 = x + w
+    y2 = y + h
+    draw.rectangle([x, y, x2, y2], outline=cor, width=grossura)
     
-    # Mostrar imagem interativa (limitar tamanho para performance)
-    max_display_width = 700
-    if pil_img.width > max_display_width:
-        ratio = max_display_width / pil_img.width
-        new_w = max_display_width
-        new_h = int(pil_img.height * ratio)
-        pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
-        display_scale = pil_img.width / w_orig
-    else:
-        display_scale = 1.0
+    return np.array(pil_img)
+
+def roi_slider_visual(filme_array, key_prefix="roi"):
+    """
+    Interface visual de ROI com sliders e preview em tempo real.
+    Mostra a imagem com um retangulo vermelho que se move conforme os sliders.
+    Retorna (filme_cortado, aplicou_roi, info).
+    """
+    h, w = filme_array.shape[:2]
     
-    # Componente interativo
-    coord = streamlit_image_coordinates(pil_img, key=f"img_coord_{key_prefix}")
+    st.info("📐 Ajuste os sliders abaixo para definir o retângulo de corte. \
+O preview atualiza automaticamente. Quando estiver satisfeito, clique em **Aplicar ROI**.")
     
-    # Processar clique
-    if coord is not None:
-        x_click = int(coord["x"] / display_scale)
-        y_click = int(coord["y"] / display_scale)
-        x_click = max(0, min(x_click, w_orig - 1))
-        y_click = max(0, min(y_click, h_orig - 1))
-        
-        if step == 1:
-            st.session_state[ss_p1] = (x_click, y_click)
-            st.session_state[ss_step] = 2
-            st.rerun()
-        elif step == 2:
-            st.session_state[ss_p2] = (x_click, y_click)
-            st.session_state[ss_step] = 3
-            st.rerun()
+    # Sliders em 2 colunas
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        roi_x = st.slider("X (posição horizontal)", 0, max(0, w - 50), 0, 5, key=f"sl_x_{key_prefix}")
+        roi_w = st.slider("Largura", 10, w, w, 5, key=f"sl_w_{key_prefix}")
+    with col_s2:
+        roi_y = st.slider("Y (posição vertical)", 0, max(0, h - 50), 0, 5, key=f"sl_y_{key_prefix}")
+        roi_h = st.slider("Altura", 10, h, h, 5, key=f"sl_h_{key_prefix}")
     
-    # Botoes de controle
+    # Garantir limites
+    roi_x = min(roi_x, w - 10)
+    roi_y = min(roi_y, h - 10)
+    roi_w = min(roi_w, w - roi_x)
+    roi_h = min(roi_h, h - roi_y)
+    
+    # Preview com retangulo
+    preview = desenhar_retangulo_preview(filme_array, roi_x, roi_y, roi_w, roi_h)
+    st.image(preview, caption=f"Preview do ROI: ({roi_x}, {roi_y}) | {roi_w} x {roi_h} px", use_container_width=True)
+    
+    # Botao aplicar
     col_b1, col_b2 = st.columns(2)
     with col_b1:
-        if st.button("🔄 Refazer seleção", key=f"btn_redo_{key_prefix}"):
-            st.session_state[ss_step] = 1
-            st.session_state[ss_p1] = None
-            st.session_state[ss_p2] = None
-            st.rerun()
+        aplicar = st.button("✅ Aplicar ROI", type="primary", key=f"btn_apply_{key_prefix}")
     with col_b2:
-        if st.button("✅ Usar filme inteiro (sem ROI)", key=f"btn_skip_{key_prefix}"):
-            return filme_array, False, "Sem ROI. Usando filme inteiro."
+        pular = st.button("⏭️ Usar filme inteiro", key=f"btn_skip_{key_prefix}")
     
-    # Verificar se temos ROI completo
-    if p1 is not None and p2 is not None:
-        x1, y1 = p1
-        x2, y2 = p2
-        # Garantir x1 < x2 e y1 < y2
-        x1, x2 = min(x1, x2), max(x1, x2)
-        y1, y2 = min(y1, y2), max(y1, y2)
-        # Garantir limites
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(w_orig, x2); y2 = min(h_orig, y2)
-        # Garantir tamanho minimo
-        if x2 - x1 < 10:
-            x2 = min(x1 + 10, w_orig)
-        if y2 - y1 < 10:
-            y2 = min(y1 + 10, h_orig)
-        
-        filme_cortado = filme_array[y1:y2, x1:x2]
-        info = f"ROI: ({x1},{y1}) -> ({x2},{y2}) | {x2-x1} x {y2-y1} px"
+    if pular:
+        return filme_array, False, "Sem ROI. Usando filme inteiro."
+    
+    if aplicar:
+        x2 = roi_x + roi_w
+        y2 = roi_y + roi_h
+        filme_cortado = filme_array[roi_y:y2, roi_x:x2]
+        info = f"ROI: ({roi_x},{roi_y}) -> ({x2},{y2}) | {roi_w} x {roi_h} px"
         st.success(f"✅ {info}")
         return filme_cortado, True, info
     
-    # Ainda aguardando cliques
-    if step == 1:
-        st.warning("👆 Aguardando clique no canto **superior esquerdo**...")
-    elif step == 2:
-        st.warning("👆 Aguardando clique no canto **inferior direito**...")
-    
-    return filme_array, False, "Aguardando seleção do ROI."
+    return filme_array, False, "Ajuste os sliders e clique em 'Aplicar ROI'."
 
 def carregar_imagem_preservando_bits(arquivo):
     """
@@ -901,8 +885,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.5")
-st.markdown("**Novo:** ROI visual por clique (2 pontos) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.6")
+st.markdown("**Novo:** ROI com sliders + preview | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1352,20 +1336,28 @@ if metodologia == "Um unico filme":
 
                         st.success(f"✅ Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
 
-                        # ========== ROI MANUAL VISUAL (CANVAS) ==========
-                        st.subheader("✂️ Seleção de Região de Interesse (ROI)")
-                        st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, ative o ROI abaixo e desenhe um retângulo sobre a imagem (clique e arraste, como no printscreen).")
+                        # ========== REMOVER FUNDO BRANCO DO SCANNER ==========
+                        st.subheader("🖼️ Filme Detectado")
+                        filme_sem_fundo, removeu, bbox_fundo = remover_fundo_branco(filme_mapa)
+                        if removeu:
+                            st.success(f"✅ Fundo branco do scanner removido automaticamente. Filme: {filme_sem_fundo.shape[1]} x {filme_sem_fundo.shape[0]} px")
+                        filme_mapa = filme_sem_fundo
+                        st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
 
-                        usar_roi_manual = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_u")
+                        # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
+                        st.subheader("✂️ Seleção de Região de Interesse (ROI)")
+                        st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
+
+                        usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key=f"chk_roi_u_{key_prefix}")
 
                         if usar_roi_manual:
-                            filme_mapa, aplicou, info_roi = roi_visual_click(filme_mapa, key_prefix="unico")
+                            filme_mapa, aplicou, info_roi = roi_slider_visual(filme_mapa, key_prefix="unico")
                             if aplicou:
                                 st.success(f"✅ {info_roi}")
                             else:
                                 st.info(info_roi)
 
-                        # Preview do filme (com ou sem ROI)
+                        # Preview final do filme para análise
                         st.subheader("Filme para Análise")
                         st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
 
@@ -1890,20 +1882,28 @@ else:
                             filme_mapa_m = filme_selecionado['imagem']
                             st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
 
-                            # ========== ROI MANUAL VISUAL (CANVAS) ==========
-                            st.subheader("✂️ Seleção de Região de Interesse (ROI)")
-                            st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, ative o ROI abaixo e desenhe um retângulo sobre a imagem (clique e arraste, como no printscreen).")
+                            # ========== REMOVER FUNDO BRANCO DO SCANNER ==========
+                            st.subheader("🖼️ Filme Selecionado")
+                            filme_sem_fundo_m, removeu_m, bbox_fundo_m = remover_fundo_branco(filme_mapa_m)
+                            if removeu_m:
+                                st.success(f"✅ Fundo branco do scanner removido automaticamente. Filme: {filme_sem_fundo_m.shape[1]} x {filme_sem_fundo_m.shape[0]} px")
+                            filme_mapa_m = filme_sem_fundo_m
+                            st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
 
-                            usar_roi_manual_m = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_m")
+                            # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
+                            st.subheader("✂️ Seleção de Região de Interesse (ROI)")
+                            st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
+
+                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key=f"chk_roi_m_{key_prefix}")
 
                             if usar_roi_manual_m:
-                                filme_mapa_m, aplicou_m, info_roi_m = roi_visual_click(filme_mapa_m, key_prefix="multi")
+                                filme_mapa_m, aplicou_m, info_roi_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")
                                 if aplicou_m:
                                     st.success(f"✅ {info_roi_m}")
                                 else:
                                     st.info(info_roi_m)
 
-                            # Preview do filme
+                            # Preview final do filme para análise
                             st.subheader("Filme para Análise")
                             st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
 

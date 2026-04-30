@@ -401,15 +401,15 @@ O preview atualiza automaticamente. Quando estiver satisfeito, clique em **Aplic
 def get_filme_para_mapa(key_prefix="roi"):
     """
     Retorna o filme a ser usado para gerar mapas.
-    Prioridade: filme com ROI aplicado > filme base (sem fundo) > None.
+    Prioridade: filme com ROI aplicado > filme processado (sem fundo) > None.
     """
     ss_key_roi = f"filme_roi_{key_prefix}"
-    ss_key_base = f"filme_base_{key_prefix}"
+    ss_key_proc = f"filme_processado_{key_prefix}"
     
     if ss_key_roi in st.session_state:
         return st.session_state[ss_key_roi]
-    elif ss_key_base in st.session_state:
-        return st.session_state[ss_key_base]
+    elif ss_key_proc in st.session_state:
+        return st.session_state[ss_key_proc]
     return None
 
 def carregar_imagem_preservando_bits(arquivo):
@@ -910,8 +910,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.7")
-st.markdown("**Corrigido:** ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.8")
+st.markdown("**Corrigido:** ROI persiste corretamente + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1350,59 +1350,76 @@ if metodologia == "Um unico filme":
                                                 key="mapa_upload")
 
                     if arq_mapa:
-                        img_mapa, info_mapa = carregar_imagem_preservando_bits(arq_mapa)
-                        st.info(f"Imagem: {info_mapa['dtype']} | shape{info_mapa['shape']}")
-
-                        # Detectar filme na imagem
-                        filme_mapa = cortar_filme_unico(img_mapa)
-                        if filme_mapa is None:
-                            st.error("❌ Filme não detectado. Tente outra imagem.")
-                            st.stop()
-
-                        st.success(f"✅ Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
-
-                        # ========== REMOVER FUNDO BRANCO DO SCANNER ==========
+                        # ========== DETECTAR NOVO UPLOAD ==========
+                        nome_arquivo = arq_mapa.name
+                        nome_anterior = st.session_state.get('upload_name_unico', None)
+                        novo_upload = (nome_anterior != nome_arquivo)
+                        
+                        if novo_upload:
+                            st.session_state['upload_name_unico'] = nome_arquivo
+                            
+                            img_mapa, info_mapa = carregar_imagem_preservando_bits(arq_mapa)
+                            st.info(f"Imagem: {info_mapa['dtype']} | shape{info_mapa['shape']}")
+                            
+                            filme_mapa = cortar_filme_unico(img_mapa)
+                            if filme_mapa is None:
+                                st.error("❌ Filme não detectado. Tente outra imagem.")
+                                st.stop()
+                            
+                            # Remover fundo branco do scanner
+                            filme_sem_fundo, removeu, _ = remover_fundo_branco(filme_mapa)
+                            if removeu:
+                                st.success(f"✅ Fundo branco removido. Filme: {filme_sem_fundo.shape[1]} x {filme_sem_fundo.shape[0]} px")
+                            filme_mapa = filme_sem_fundo
+                            
+                            # Salvar filme processado e limpar ROI anterior (novo filme = novo ROI)
+                            st.session_state['filme_processado_unico'] = filme_mapa
+                            for k in ['filme_roi_unico', 'roi_aplicado_unico']:
+                                if k in st.session_state:
+                                    del st.session_state[k]
+                        else:
+                            # Mesmo arquivo — usar filme já processado
+                            filme_mapa = st.session_state.get('filme_processado_unico', None)
+                            if filme_mapa is None:
+                                # Fallback: reprocessar
+                                img_mapa, info_mapa = carregar_imagem_preservando_bits(arq_mapa)
+                                filme_mapa = cortar_filme_unico(img_mapa)
+                                filme_sem_fundo, _, _ = remover_fundo_branco(filme_mapa)
+                                filme_mapa = filme_sem_fundo
+                                st.session_state['filme_processado_unico'] = filme_mapa
+                        
+                        st.success(f"✅ Filme pronto: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
+                        
+                        # Preview do filme processado
                         st.subheader("🖼️ Filme Detectado")
-                        filme_sem_fundo, removeu, bbox_fundo = remover_fundo_branco(filme_mapa)
-                        if removeu:
-                            st.success(f"✅ Fundo branco do scanner removido automaticamente. Filme: {filme_sem_fundo.shape[1]} x {filme_sem_fundo.shape[0]} px")
-                        filme_mapa = filme_sem_fundo
                         st.image(visualizar_filme0_preview(filme_mapa), use_container_width=True)
-
-                        # Salvar filme base no session_state (limpa ROI anterior quando novo upload)
-                        st.session_state['filme_base_unico'] = filme_mapa
-                        # Limpar ROI de upload anterior
-                        for k in ['filme_roi_unico', 'roi_aplicado_unico']:
-                            if k in st.session_state:
-                                del st.session_state[k]
-
+                        
                         # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
                         st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                         st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
-
-                        usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_u_v96")
-
+                        
+                        usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_u_v97")
+                        
                         if usar_roi_manual:
                             roi_aplicado = roi_slider_visual(filme_mapa, key_prefix="unico")
                             if roi_aplicado:
-                                # ROI foi aplicado e salvo no session_state; a função já deu rerun
-                                pass
-
-                        # Obter filme final: ROI cortado (se existir) ou base
+                                pass  # roi_slider_visual já deu rerun
+                        
+                        # Obter filme final: ROI cortado (se existir) ou processado
                         filme_final = get_filme_para_mapa("unico")
                         if filme_final is None:
                             filme_final = filme_mapa
-
-                        # Mostrar info se ROI está ativo
+                        
+                        # Mostrar status
                         if 'filme_roi_unico' in st.session_state:
                             st.success("✅ ROI ativo — o mapa usará apenas a região selecionada.")
                         else:
                             st.info("📋 Usando filme inteiro (sem ROI).")
-
+                        
                         # Preview final do filme para análise
                         st.subheader("Filme para Análise")
                         st.image(visualizar_filme0_preview(filme_final), use_container_width=True)
-
+                        
                         # ========== PARAMETROS DO MAPA ==========
                         st.subheader("⚙️ Parâmetros do Mapa")
                         col_p1, col_p2 = st.columns(2)
@@ -1410,9 +1427,9 @@ if metodologia == "Um unico filme":
                             dose_prescrita = st.number_input("Dose prescrita", min_value=0.1, value=10.0, step=0.5)
                         with col_p2:
                             unidade = st.radio("Unidade", ["Gy", "cGy"], horizontal=True, key="uni_mapa")
-
+                        
                         paleta = st.selectbox("Paleta de cores", ['jet', 'turbo', 'viridis', 'plasma', 'hot'], index=0)
-
+                        
                         # ========== PARAMETROS DAS ISODOSES ==========
                         st.subheader("⚙️ Estilo das Isodoses")
                         col_i1, col_i2, col_i3 = st.columns(3)
@@ -1422,17 +1439,17 @@ if metodologia == "Um unico filme":
                             estilo_iso = st.radio("Estilo", ["Sólido", "Tracejado"], horizontal=True, key="ls_u")
                         with col_i3:
                             mostrar_labels_iso = st.checkbox("Mostrar labels (%)", value=True, key="lbl_u")
-
+                        
                         if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa"):
                             with st.spinner("Calculando mapas..."):
-                                # SEMPRE usar filme do session_state (persiste mesmo ao mudar parâmetros)
+                                # Usar sempre o filme do session_state (persiste entre interações)
                                 filme_para_mapa = get_filme_para_mapa("unico")
                                 if filme_para_mapa is None:
                                     filme_para_mapa = filme_mapa
                                 
                                 mapa_dose = calcular_mapa_dose(filme_para_mapa, pv0, curva, adc_aumenta_com_dose)
                                 stats = estatisticas_mapa(mapa_dose, unidade)
-
+                                
                                 # Estatisticas
                                 st.subheader("Estatísticas")
                                 col_e1, col_e2, col_e3 = st.columns(3)
@@ -1442,8 +1459,8 @@ if metodologia == "Um unico filme":
                                     st.metric("Dose Média", f"{stats['media']} {unidade}")
                                 with col_e3:
                                     st.metric("Dose Mínima", f"{stats['min']} {unidade}")
-
-                                # MAPA DE DOSE (heatmap colorido com percentual)
+                                
+                                # MAPA DE DOSE (%)
                                 st.subheader("Mapa de Dose (%)")
                                 fig1, ax1 = plt.subplots(figsize=(10, 9))
                                 dose_ref = dose_prescrita if unidade == 'Gy' else dose_prescrita / 100.0
@@ -1461,8 +1478,8 @@ if metodologia == "Um unico filme":
                                 buf1.seek(0)
                                 plt.close(fig1)
                                 st.image(buf1, use_container_width=True)
-
-                                # MAPA DE ISODOSE (filme + contornos coloridos + legenda)
+                                
+                                # MAPA DE ISODOSE
                                 st.subheader("Isodose Map")
                                 estilo_linha = 'tracejado' if estilo_iso == "Tracejado" else 'solido'
                                 buf2 = plot_mapa_isodose(
@@ -1472,7 +1489,7 @@ if metodologia == "Um unico filme":
                                     mostrar_labels=mostrar_labels_iso
                                 )
                                 st.image(buf2, use_container_width=True)
-
+                                
                                 # Tabela de isodoses
                                 st.subheader("Tabela de Isodoses")
                                 d = dose_prescrita if unidade == 'Gy' else dose_prescrita
@@ -1907,68 +1924,94 @@ else:
                                                   key="mapa_upload_multi")
 
                     if arq_mapa_m:
-                        img_mapa_m, info_mapa_m = carregar_imagem_preservando_bits(arq_mapa_m)
-                        st.info(f"Imagem: {info_mapa_m['dtype']} | shape{info_mapa_m['shape']}")
-
-                        # Detectar filme na imagem
-                        filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
-
-                        if not filmes_mapa:
-                            st.error("Nenhum filme detectado! Tente outra imagem.")
+                        # ========== DETECTAR NOVO UPLOAD ==========
+                        nome_arquivo_m = arq_mapa_m.name
+                        nome_anterior_m = st.session_state.get('upload_name_multi', None)
+                        novo_upload_m = (nome_anterior_m != nome_arquivo_m)
+                        
+                        if novo_upload_m:
+                            st.session_state['upload_name_multi'] = nome_arquivo_m
+                            
+                            img_mapa_m, info_mapa_m = carregar_imagem_preservando_bits(arq_mapa_m)
+                            st.info(f"Imagem: {info_mapa_m['dtype']} | shape{info_mapa_m['shape']}")
+                            
+                            # Detectar filme na imagem
+                            filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
+                            
+                            if not filmes_mapa:
+                                st.error("Nenhum filme detectado! Tente outra imagem.")
+                            else:
+                                st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
+                                
+                                # Selecionar qual filme mapear
+                                filme_selecionado = filmes_mapa[0]
+                                if len(filmes_mapa) > 1:
+                                    opcao_filme = st.selectbox("Selecione o filme para mapear",
+                                                               [f"Filme {i+1}" for i in range(len(filmes_mapa))])
+                                    idx_filme = int(opcao_filme.split()[-1]) - 1
+                                    filme_selecionado = filmes_mapa[idx_filme]
+                                
+                                filme_mapa_m = filme_selecionado['imagem']
+                                st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                                
+                                # Remover fundo branco do scanner
+                                filme_sem_fundo_m, removeu_m, _ = remover_fundo_branco(filme_mapa_m)
+                                if removeu_m:
+                                    st.success(f"✅ Fundo branco removido. Filme: {filme_sem_fundo_m.shape[1]} x {filme_sem_fundo_m.shape[0]} px")
+                                filme_mapa_m = filme_sem_fundo_m
+                                
+                                # Salvar filme processado e limpar ROI anterior (novo filme = novo ROI)
+                                st.session_state['filme_processado_multi'] = filme_mapa_m
+                                for k in ['filme_roi_multi', 'roi_aplicado_multi']:
+                                    if k in st.session_state:
+                                        del st.session_state[k]
                         else:
-                            st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
-
-                            # Selecionar qual filme mapear
-                            filme_selecionado = filmes_mapa[0]
-                            if len(filmes_mapa) > 1:
-                                opcao_filme = st.selectbox("Selecione o filme para mapear",
-                                                           [f"Filme {i+1}" for i in range(len(filmes_mapa))])
-                                idx_filme = int(opcao_filme.split()[-1]) - 1
-                                filme_selecionado = filmes_mapa[idx_filme]
-
-                            filme_mapa_m = filme_selecionado['imagem']
-                            st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
-
-                            # ========== REMOVER FUNDO BRANCO DO SCANNER ==========
+                            # Mesmo arquivo — usar filme já processado
+                            filme_mapa_m = st.session_state.get('filme_processado_multi', None)
+                            if filme_mapa_m is None:
+                                # Fallback: reprocessar
+                                img_mapa_m, _ = carregar_imagem_preservando_bits(arq_mapa_m)
+                                filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
+                                filme_selecionado = filmes_mapa[0] if filmes_mapa else None
+                                if filme_selecionado:
+                                    filme_mapa_m = filme_selecionado['imagem']
+                                    filme_sem_fundo_m, _, _ = remover_fundo_branco(filme_mapa_m)
+                                    filme_mapa_m = filme_sem_fundo_m
+                                    st.session_state['filme_processado_multi'] = filme_mapa_m
+                        
+                        if filme_mapa_m is not None:
+                            st.success(f"✅ Filme pronto: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                            
+                            # Preview do filme processado
                             st.subheader("🖼️ Filme Selecionado")
-                            filme_sem_fundo_m, removeu_m, bbox_fundo_m = remover_fundo_branco(filme_mapa_m)
-                            if removeu_m:
-                                st.success(f"✅ Fundo branco do scanner removido automaticamente. Filme: {filme_sem_fundo_m.shape[1]} x {filme_sem_fundo_m.shape[0]} px")
-                            filme_mapa_m = filme_sem_fundo_m
                             st.image(visualizar_filme0_preview(filme_mapa_m), use_container_width=True)
-
-                            # Salvar filme base no session_state (limpa ROI anterior quando novo upload)
-                            st.session_state['filme_base_multi'] = filme_mapa_m
-                            for k in ['filme_roi_multi', 'roi_aplicado_multi']:
-                                if k in st.session_state:
-                                    del st.session_state[k]
-
+                            
                             # ========== ROI MANUAL VISUAL (SLIDERS + PREVIEW) ==========
                             st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                             st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
-
-                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v96")
-
+                            
+                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v97")
+                            
                             if usar_roi_manual_m:
                                 roi_aplicado_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")
                                 if roi_aplicado_m:
-                                    pass
-
-                            # Obter filme final: ROI cortado (se existir) ou base
+                                    pass  # roi_slider_visual já deu rerun
+                            
+                            # Obter filme final: ROI cortado (se existir) ou processado
                             filme_final_m = get_filme_para_mapa("multi")
                             if filme_final_m is None:
                                 filme_final_m = filme_mapa_m
-
-                            # Mostrar info se ROI está ativo
+                            
+                            # Mostrar status
                             if 'filme_roi_multi' in st.session_state:
                                 st.success("✅ ROI ativo — o mapa usará apenas a região selecionada.")
                             else:
                                 st.info("📋 Usando filme inteiro (sem ROI).")
-
+                            
                             # Preview final do filme para análise
                             st.subheader("Filme para Análise")
                             st.image(visualizar_filme0_preview(filme_final_m), use_container_width=True)
-
+                            
                             # ========== PARAMETROS ==========
                             st.subheader("⚙️ Parâmetros do Mapa")
                             col_p1, col_p2 = st.columns(2)
@@ -1977,7 +2020,7 @@ else:
                             with col_p2:
                                 unidade_m = st.radio("Unidade", ["Gy", "cGy"], horizontal=True, key="uni_mapa_m")
                             paleta_m = st.selectbox("Paleta", ['jet', 'turbo', 'viridis', 'plasma', 'hot'], index=0, key="plt_m")
-
+                            
                             # ========== PARAMETROS DAS ISODOSES ==========
                             st.subheader("⚙️ Estilo das Isodoses")
                             col_i1, col_i2, col_i3 = st.columns(3)
@@ -1987,10 +2030,10 @@ else:
                                 estilo_iso_m = st.radio("Estilo", ["Sólido", "Tracejado"], horizontal=True, key="ls_m")
                             with col_i3:
                                 mostrar_labels_iso_m = st.checkbox("Mostrar labels (%)", value=True, key="lbl_m")
-
+                            
                             if st.button("🔬 GERAR MAPAS", type="primary", key="btn_mapa_m"):
                                 with st.spinner("Calculando mapas..."):
-                                    # SEMPRE usar filme do session_state
+                                    # Usar sempre o filme do session_state
                                     filme_para_mapa_m = get_filme_para_mapa("multi")
                                     if filme_para_mapa_m is None:
                                         filme_para_mapa_m = filme_mapa_m
@@ -2001,7 +2044,7 @@ else:
                                     adc_aumenta = False
                                     if len(adcs_cal) >= 2 and len(doses_cal) >= 2:
                                         adc_aumenta = adcs_cal[-1] > adcs_cal[0] and doses_cal[-1] > doses_cal[0]
-
+                                    
                                     # Curva dict
                                     curva_dict = {}
                                     if 'a' in curva_data:
@@ -2011,10 +2054,10 @@ else:
                                     curva_dict['equation'] = resultado['equation']
                                     curva_dict['r2'] = resultado['r2']
                                     curva_dict['type'] = resultado.get('tipo_fitting', 'polynomial2')
-
+                                    
                                     mapa_dose_m = calcular_mapa_dose(filme_para_mapa_m, pv0, curva_dict, adc_aumenta)
                                     stats_m = estatisticas_mapa(mapa_dose_m, unidade_m)
-
+                                    
                                     # Estatisticas
                                     st.subheader("Estatísticas")
                                     col_e1, col_e2, col_e3 = st.columns(3)
@@ -2024,7 +2067,7 @@ else:
                                         st.metric("Dose Média", f"{stats_m['media']} {unidade_m}")
                                     with col_e3:
                                         st.metric("Dose Mín", f"{stats_m['min']} {unidade_m}")
-
+                                    
                                     # MAPA DE DOSE (%)
                                     st.subheader("Mapa de Dose (%)")
                                     fig1, ax1 = plt.subplots(figsize=(10, 9))
@@ -2043,8 +2086,8 @@ else:
                                     buf1.seek(0)
                                     plt.close(fig1)
                                     st.image(buf1, use_container_width=True)
-
-                                    # MAPA DE ISODOSE (com legenda e opcoes de estilo)
+                                    
+                                    # MAPA DE ISODOSE
                                     st.subheader("Isodose Map")
                                     estilo_linha_m = 'tracejado' if estilo_iso_m == "Tracejado" else 'solido'
                                     buf2 = plot_mapa_isodose(
@@ -2054,7 +2097,7 @@ else:
                                         mostrar_labels=mostrar_labels_iso_m
                                     )
                                     st.image(buf2, use_container_width=True)
-
+                                    
                                     # Tabela
                                     st.subheader("Tabela de Isodoses")
                                     df_iso_m = pd.DataFrame([

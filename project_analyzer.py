@@ -820,33 +820,37 @@ def plot_mapa_dose(dose_map, unidade='Gy', paleta='jet'):
 
 def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy',
                         grossura=2.5, estilo='solido', mostrar_labels=True,
-                        niveis_pct=None):
+                        niveis_pct=None, paleta='jet'):
     """
-    Mapa de Isodose: filme em cinza + linhas coloridas.
+    Mapa de Isodose: fundo = mapa de dose colorido (heatmap) + linhas de isodose brancas/pretas.
     
     Parametros de estilo:
         grossura: espessura das linhas (0.5 a 5.0)
         estilo: 'solido' ou 'tracejado'
         mostrar_labels: True/False para mostrar % sobre as linhas
         niveis_pct: lista de (percentual, cor, label), default 50/75/100/125/150%
+        paleta: paleta de cores do fundo (jet, turbo, viridis, etc.)
     """
     fig, ax = plt.subplots(figsize=(10, 9))
-    if unidade == 'cGy':
-        display_map = dose_map * 100.0
-        d_presc = dose_prescrita * 100.0
-    else:
-        display_map = dose_map
-        d_presc = dose_prescrita
-    # Fundo: filme em escala de cinza
-    fundo = img_filme[:, :, 0].astype(np.float64) if len(img_filme.shape) == 3 else img_filme.astype(np.float64)
-    fmax = fundo.max()
-    fundo_norm = fundo / fmax if fmax > 0 else fundo
-    ax.imshow(fundo_norm, cmap='gray', aspect='equal', vmin=0, vmax=1)
-    # Isodoses com cores fixas
+    
+    # Calcular mapa percentual
+    dose_ref = dose_prescrita if unidade == 'Gy' else dose_prescrita / 100.0
+    mapa_pct = (dose_map / dose_ref) * 100.0
+    mapa_pct = np.clip(mapa_pct, 0, 200)
+    
+    # FUND0: heatmap colorido do mapa de dose (mesmo do Mapa de Dose)
+    im_fundo = ax.imshow(mapa_pct, cmap=paleta, vmin=0, vmax=150, aspect='equal')
+    
+    # Colorbar do fundo
+    cbar = plt.colorbar(im_fundo, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Dose (%)', fontsize=13, fontweight='bold')
+    
+    # Isodoses com cores fixas (branco com borda preta para contraste máximo)
     if niveis_pct is None:
-        niveis_pct = [(50, 'blue', '50%'), (75, 'lime', '75%'), (100, 'yellow', '100%'),
+        niveis_pct = [(50, 'white', '50%'), (75, 'cyan', '75%'), (100, 'yellow', '100%'),
                       (125, 'orange', '125%'), (150, 'red', '150%')]
-    h, w = display_map.shape
+    
+    h, w = mapa_pct.shape
     X, Y = np.meshgrid(np.arange(w), np.arange(h))
     
     # Estilo da linha
@@ -858,19 +862,31 @@ def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy',
     legend_labels = []
     
     for pct, cor, label_txt in niveis_pct:
-        nivel_abs = d_presc * (pct / 100.0)
-        if 0 < nivel_abs < np.max(display_map) * 1.5:
-            cs = ax.contour(X, Y, display_map, levels=[nivel_abs],
-                           colors=cor, linewidths=grossura, linestyles=ls, alpha=0.9)
+        nivel_abs = dose_ref * (pct / 100.0)
+        # Verificar se o nível está dentro da faixa de dose do mapa
+        d_min = np.min(dose_map)
+        d_max = np.max(dose_map)
+        
+        # Só desenhar se o nível estiver próximo da faixa de dose (com margem de 50%)
+        if nivel_abs >= d_min * 0.5 and nivel_abs <= d_max * 1.5:
+            # Desenhar contorno com shadow/glow para melhor visibilidade
+            # Primeiro: contorno preto grosso (sombra)
+            ax.contour(X, Y, dose_map, levels=[nivel_abs],
+                      colors='black', linewidths=grossura + 2.0, linestyles=ls, alpha=0.6)
+            # Depois: contorno colorido fino
+            cs = ax.contour(X, Y, dose_map, levels=[nivel_abs],
+                           colors=cor, linewidths=grossura, linestyles=ls, alpha=0.95)
+            
             # Labels opcionais com espaçamento melhorado
             if mostrar_labels:
                 ax.clabel(cs, inline=True, fontsize=10, fmt=lambda x, l=label_txt: l,
-                         colors=cor, inline_spacing=12)
+                         colors='black', inline_spacing=12)
+            
             # Handle para legenda
             legend_handles.append(Line2D([0], [0], color=cor, lw=grossura, linestyle=ls))
             legend_labels.append(label_txt)
     
-    # Legenda separada (fora do gráfico se possível)
+    # Legenda separada
     if legend_handles:
         ax.legend(legend_handles, legend_labels, loc='upper left',
                  fontsize=10, framealpha=0.9, edgecolor='white',
@@ -910,8 +926,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.8")
-st.markdown("**Corrigido:** ROI persiste corretamente + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.9")
+st.markdown("**Corrigido:** Isodoses sobre heatmap colorido | ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1486,7 +1502,8 @@ if metodologia == "Um unico filme":
                                     mapa_dose, filme_para_mapa,
                                     dose_prescrita=dose_prescrita, unidade=unidade,
                                     grossura=grossura_iso, estilo=estilo_linha,
-                                    mostrar_labels=mostrar_labels_iso
+                                    mostrar_labels=mostrar_labels_iso,
+                                    paleta=paleta
                                 )
                                 st.image(buf2, use_container_width=True)
                                 
@@ -2094,7 +2111,8 @@ else:
                                         mapa_dose_m, filme_para_mapa_m,
                                         dose_prescrita=dose_prescrita_m, unidade=unidade_m,
                                         grossura=grossura_iso_m, estilo=estilo_linha_m,
-                                        mostrar_labels=mostrar_labels_iso_m
+                                        mostrar_labels=mostrar_labels_iso_m,
+                                        paleta=paleta_m
                                     )
                                     st.image(buf2, use_container_width=True)
                                     

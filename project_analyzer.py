@@ -886,12 +886,12 @@ def plot_mapa_isodose(dose_map, img_filme, dose_prescrita=10.0, unidade='Gy',
             legend_handles.append(Line2D([0], [0], color=cor, lw=grossura, linestyle=ls))
             legend_labels.append(label_txt)
     
-    # Legenda separada
+    # Legenda no canto superior esquerdo (lado esquerdo do grafico)
     if legend_handles:
         ax.legend(legend_handles, legend_labels, loc='upper left',
-                 fontsize=10, framealpha=0.9, edgecolor='white',
-                 title='Isodoses', title_fontsize=11,
-                 bbox_to_anchor=(1.02, 1.0))
+                 fontsize=10, framealpha=0.85, edgecolor='black',
+                 facecolor='white',
+                 title='Isodoses', title_fontsize=11)
     
     ax.set_title('Isodose Map', fontsize=14, fontweight='bold', pad=10)
     ax.set_xlabel('Pixels X', fontsize=11)
@@ -926,7 +926,7 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.9")
+st.title("🔬 Project Analyzer v9.9.1")
 st.markdown("**Corrigido:** Isodoses sobre heatmap colorido | ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 

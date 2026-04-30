@@ -885,8 +885,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.6")
-st.markdown("**Novo:** ROI com sliders + preview | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.6.1")
+st.markdown("**Corrigido:** ROI com sliders + preview | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1348,7 +1348,7 @@ if metodologia == "Um unico filme":
                         st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                         st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
 
-                        usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key=f"chk_roi_u_{key_prefix}")
+                        usar_roi_manual = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_u_v96")
 
                         if usar_roi_manual:
                             filme_mapa, aplicou, info_roi = roi_slider_visual(filme_mapa, key_prefix="unico")
@@ -1894,7 +1894,7 @@ else:
                             st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                             st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
 
-                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key=f"chk_roi_m_{key_prefix}")
+                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v96")
 
                             if usar_roi_manual_m:
                                 filme_mapa_m, aplicou_m, info_roi_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")

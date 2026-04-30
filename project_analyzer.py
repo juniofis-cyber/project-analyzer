@@ -1,6 +1,14 @@
 import streamlit as st
-from streamlit_drawable_canvas import st_canvas
 import numpy as np
+import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
+import io
+import json
+import tifffile
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from streamlit_image_coordinates import streamlit_image_coordinates
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import io
@@ -266,13 +274,13 @@ def normalizar_para_display(imagem):
         img_norm = img_float
     return img_norm.clip(0, 255).astype(np.uint8)
 
-def roi_visual_canvas(filme_array, key_prefix="roi"):
+def roi_visual_click(filme_array, key_prefix="roi"):
     """
-    Exibe o filme em um canvas interativo onde o usuario desenha um retangulo
-    para selecionar o ROI. Retorna (filme_cortado, aplicou_roi, info).
-    Tipo printscreen: clica e arrasta para selecionar a area.
+    Selecao visual de ROI por clique em 2 pontos na imagem.
+    Ponto 1 = canto superior esquerdo, Ponto 2 = canto inferior direito.
+    Retorna (filme_cortado, aplicou_roi, info).
     """
-    # Preparar imagem para o canvas: converte para PIL RGB, redimensiona para largura fixa
+    # Normalizar imagem para display
     img_display = normalizar_para_display(filme_array)
     if len(img_display.shape) == 2:
         img_rgb = np.stack([img_display]*3, axis=-1)
@@ -280,69 +288,120 @@ def roi_visual_canvas(filme_array, key_prefix="roi"):
         img_rgb = img_display[:,:,:3]
     
     h_orig, w_orig = img_rgb.shape[:2]
-    canvas_width = min(700, w_orig)
-    canvas_height = int(h_orig * (canvas_width / w_orig))
     
-    pil_img = Image.fromarray(img_rgb).resize((canvas_width, canvas_height), Image.LANCZOS)
+    # Criar chaves unicas para session state
+    ss_p1 = f"roi_p1_{key_prefix}"
+    ss_p2 = f"roi_p2_{key_prefix}"
+    ss_step = f"roi_step_{key_prefix}"
     
-    st.info("🖱️ **Clique e arraste** na imagem abaixo para desenhar o retangulo de ROI. \
-Se nao desenhar nada, o filme inteiro sera usado.")
+    # Inicializar session state
+    if ss_step not in st.session_state:
+        st.session_state[ss_step] = 1  # Passo 1: aguardando Ponto 1
+        st.session_state[ss_p1] = None
+        st.session_state[ss_p2] = None
     
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
-        stroke_width=2,
-        stroke_color="#FFA500",
-        background_color="",
-        background_image=pil_img,
-        update_streamlit=True,
-        drawing_mode="rect",
-        key=f"canvas_{key_prefix}",
-        width=canvas_width,
-        height=canvas_height,
-    )
+    st.info("🖱️ **Passo 1:** Clique no canto **superior esquerdo** da área desejada. \
+**Passo 2:** Clique no canto **inferior direito**.")
     
-    # Extrair retangulo do JSON data
-    objetos = []
-    if canvas_result.json_data is not None:
-        objetos = canvas_result.json_data.get("objects", [])
+    step = st.session_state[ss_step]
+    p1 = st.session_state[ss_p1]
+    p2 = st.session_state[ss_p2]
     
-    # Pegar apenas os retangulos (type == "rect")
-    rects = [o for o in objetos if o.get("type") == "rect"]
+    # Criar imagem com overlay do retangulo se ja tiver pontos
+    pil_img = Image.fromarray(img_rgb)
+    if p1 is not None:
+        draw = ImageDraw.Draw(pil_img)
+        if p2 is not None:
+            # Desenhar retangulo completo
+            draw.rectangle([p1, p2], outline="#FFA500", width=3)
+            # Preenchimento semi-transparente (converter para RGBA)
+            overlay = Image.new('RGBA', pil_img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            overlay_draw.rectangle([p1, p2], fill=(255, 165, 0, 60))
+            pil_img = pil_img.convert('RGBA')
+            pil_img = Image.alpha_composite(pil_img, overlay)
+        else:
+            # Apenas o primeiro ponto + linha guia
+            draw.ellipse([p1[0]-5, p1[1]-5, p1[0]+5, p1[1]+5], fill="red")
+            draw.text((p1[0]+8, p1[1]-8), "P1", fill="red")
     
-    if len(rects) == 0:
-        return filme_array, False, "Nenhum ROI desenhado. Usando filme inteiro."
+    # Converter para RGB se necessario (componente espera RGB)
+    if pil_img.mode == 'RGBA':
+        # Criar fundo branco e compor
+        fundo = Image.new('RGB', pil_img.size, (0, 0, 0))
+        fundo.paste(pil_img, mask=pil_img.split()[3])
+        pil_img = fundo
     
-    # Pegar o ultimo retangulo desenhado
-    r = rects[-1]
-    left = r.get("left", 0)
-    top = r.get("top", 0)
-    width = r.get("width", 0)
-    height = r.get("height", 0)
+    # Mostrar imagem interativa (limitar tamanho para performance)
+    max_display_width = 700
+    if pil_img.width > max_display_width:
+        ratio = max_display_width / pil_img.width
+        new_w = max_display_width
+        new_h = int(pil_img.height * ratio)
+        pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+        display_scale = pil_img.width / w_orig
+    else:
+        display_scale = 1.0
     
-    # Escalar coordenadas de volta para o tamanho original
-    scale_x = w_orig / canvas_width
-    scale_y = h_orig / canvas_height
+    # Componente interativo
+    coord = streamlit_image_coordinates(pil_img, key=f"img_coord_{key_prefix}")
     
-    x1 = int(left * scale_x)
-    y1 = int(top * scale_y)
-    x2 = int((left + width) * scale_x)
-    y2 = int((top + height) * scale_y)
+    # Processar clique
+    if coord is not None:
+        x_click = int(coord["x"] / display_scale)
+        y_click = int(coord["y"] / display_scale)
+        x_click = max(0, min(x_click, w_orig - 1))
+        y_click = max(0, min(y_click, h_orig - 1))
+        
+        if step == 1:
+            st.session_state[ss_p1] = (x_click, y_click)
+            st.session_state[ss_step] = 2
+            st.rerun()
+        elif step == 2:
+            st.session_state[ss_p2] = (x_click, y_click)
+            st.session_state[ss_step] = 3
+            st.rerun()
     
-    # Garantir limites validos
-    x1 = max(0, min(x1, w_orig))
-    y1 = max(0, min(y1, h_orig))
-    x2 = max(0, min(x2, w_orig))
-    y2 = max(0, min(y2, h_orig))
+    # Botoes de controle
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        if st.button("🔄 Refazer seleção", key=f"btn_redo_{key_prefix}"):
+            st.session_state[ss_step] = 1
+            st.session_state[ss_p1] = None
+            st.session_state[ss_p2] = None
+            st.rerun()
+    with col_b2:
+        if st.button("✅ Usar filme inteiro (sem ROI)", key=f"btn_skip_{key_prefix}"):
+            return filme_array, False, "Sem ROI. Usando filme inteiro."
     
-    # Garantir que x2 > x1 e y2 > y1
-    if x2 <= x1:
-        x2 = min(x1 + 10, w_orig)
-    if y2 <= y1:
-        y2 = min(y1 + 10, h_orig)
+    # Verificar se temos ROI completo
+    if p1 is not None and p2 is not None:
+        x1, y1 = p1
+        x2, y2 = p2
+        # Garantir x1 < x2 e y1 < y2
+        x1, x2 = min(x1, x2), max(x1, x2)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        # Garantir limites
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(w_orig, x2); y2 = min(h_orig, y2)
+        # Garantir tamanho minimo
+        if x2 - x1 < 10:
+            x2 = min(x1 + 10, w_orig)
+        if y2 - y1 < 10:
+            y2 = min(y1 + 10, h_orig)
+        
+        filme_cortado = filme_array[y1:y2, x1:x2]
+        info = f"ROI: ({x1},{y1}) -> ({x2},{y2}) | {x2-x1} x {y2-y1} px"
+        st.success(f"✅ {info}")
+        return filme_cortado, True, info
     
-    filme_cortado = filme_array[y1:y2, x1:x2]
-    info = f"ROI: ({x1},{y1}) -> ({x2},{y2}) | {x2-x1} x {y2-y1} px"
-    return filme_cortado, True, info
+    # Ainda aguardando cliques
+    if step == 1:
+        st.warning("👆 Aguardando clique no canto **superior esquerdo**...")
+    elif step == 2:
+        st.warning("👆 Aguardando clique no canto **inferior direito**...")
+    
+    return filme_array, False, "Aguardando seleção do ROI."
 
 def carregar_imagem_preservando_bits(arquivo):
     """
@@ -842,8 +901,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.4")
-st.markdown("**Novo:** ROI visual corrigido (clique e arraste) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.5")
+st.markdown("**Novo:** ROI visual por clique (2 pontos) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1300,7 +1359,7 @@ if metodologia == "Um unico filme":
                         usar_roi_manual = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_u")
 
                         if usar_roi_manual:
-                            filme_mapa, aplicou, info_roi = roi_visual_canvas(filme_mapa, key_prefix="unico")
+                            filme_mapa, aplicou, info_roi = roi_visual_click(filme_mapa, key_prefix="unico")
                             if aplicou:
                                 st.success(f"✅ {info_roi}")
                             else:
@@ -1838,7 +1897,7 @@ else:
                             usar_roi_manual_m = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_m")
 
                             if usar_roi_manual_m:
-                                filme_mapa_m, aplicou_m, info_roi_m = roi_visual_canvas(filme_mapa_m, key_prefix="multi")
+                                filme_mapa_m, aplicou_m, info_roi_m = roi_visual_click(filme_mapa_m, key_prefix="multi")
                                 if aplicou_m:
                                     st.success(f"✅ {info_roi_m}")
                                 else:

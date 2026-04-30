@@ -1,4 +1,5 @@
 import streamlit as st
+from streamlit_drawable_canvas import st_canvas
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -264,6 +265,83 @@ def normalizar_para_display(imagem):
     else:
         img_norm = img_float
     return img_norm.clip(0, 255).astype(np.uint8)
+
+def roi_visual_canvas(filme_array, key_prefix="roi"):
+    """
+    Exibe o filme em um canvas interativo onde o usuario desenha um retangulo
+    para selecionar o ROI. Retorna (filme_cortado, aplicou_roi, info).
+    Tipo printscreen: clica e arrasta para selecionar a area.
+    """
+    # Preparar imagem para o canvas: converte para PIL RGB, redimensiona para largura fixa
+    img_display = normalizar_para_display(filme_array)
+    if len(img_display.shape) == 2:
+        img_rgb = np.stack([img_display]*3, axis=-1)
+    else:
+        img_rgb = img_display[:,:,:3]
+    
+    h_orig, w_orig = img_rgb.shape[:2]
+    canvas_width = min(700, w_orig)
+    canvas_height = int(h_orig * (canvas_width / w_orig))
+    
+    pil_img = Image.fromarray(img_rgb).resize((canvas_width, canvas_height), Image.LANCZOS)
+    
+    st.info("🖱️ **Clique e arraste** na imagem abaixo para desenhar o retangulo de ROI. \
+Se nao desenhar nada, o filme inteiro sera usado.")
+    
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # fill semi-transparent orange
+        stroke_width=2,
+        stroke_color="#FFA500",
+        background_image=pil_img,
+        drawing_mode="rect",
+        key=f"canvas_{key_prefix}",
+        width=canvas_width,
+        height=canvas_height,
+        update_mode="no_update",
+    )
+    
+    # Extrair retangulo do JSON data
+    objetos = []
+    if canvas_result.json_data is not None:
+        objetos = canvas_result.json_data.get("objects", [])
+    
+    # Pegar apenas os retangulos (type == "rect")
+    rects = [o for o in objetos if o.get("type") == "rect"]
+    
+    if len(rects) == 0:
+        return filme_array, False, "Nenhum ROI desenhado. Usando filme inteiro."
+    
+    # Pegar o ultimo retangulo desenhado
+    r = rects[-1]
+    left = r.get("left", 0)
+    top = r.get("top", 0)
+    width = r.get("width", 0)
+    height = r.get("height", 0)
+    
+    # Escalar coordenadas de volta para o tamanho original
+    scale_x = w_orig / canvas_width
+    scale_y = h_orig / canvas_height
+    
+    x1 = int(left * scale_x)
+    y1 = int(top * scale_y)
+    x2 = int((left + width) * scale_x)
+    y2 = int((top + height) * scale_y)
+    
+    # Garantir limites validos
+    x1 = max(0, min(x1, w_orig))
+    y1 = max(0, min(y1, h_orig))
+    x2 = max(0, min(x2, w_orig))
+    y2 = max(0, min(y2, h_orig))
+    
+    # Garantir que x2 > x1 e y2 > y1
+    if x2 <= x1:
+        x2 = min(x1 + 10, w_orig)
+    if y2 <= y1:
+        y2 = min(y1 + 10, h_orig)
+    
+    filme_cortado = filme_array[y1:y2, x1:x2]
+    info = f"ROI: ({x1},{y1}) -> ({x2},{y2}) | {x2-x1} x {y2-y1} px"
+    return filme_cortado, True, info
 
 def carregar_imagem_preservando_bits(arquivo):
     """
@@ -763,8 +841,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.2")
-st.markdown("**Novo:** ROI manual | Estilo isodoses (grossura/sólido/tracejado) | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v9.3")
+st.markdown("**Novo:** ROI visual (clique e arraste) | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1214,29 +1292,18 @@ if metodologia == "Um unico filme":
 
                         st.success(f"✅ Filme detectado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
 
-                        # ========== ROI MANUAL ==========
+                        # ========== ROI MANUAL VISUAL (CANVAS) ==========
                         st.subheader("✂️ Seleção de Região de Interesse (ROI)")
-                        st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, defina o ROI abaixo. Deixe em branco para usar o filme inteiro.")
+                        st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, ative o ROI abaixo e desenhe um retângulo sobre a imagem (clique e arraste, como no printscreen).")
 
-                        usar_roi_manual = st.checkbox("Usar ROI manual", value=False, key="chk_roi_u")
+                        usar_roi_manual = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_u")
 
                         if usar_roi_manual:
-                            h_fm, w_fm = filme_mapa.shape[:2]
-                            col_rx, col_ry, col_rw, col_rh = st.columns(4)
-                            with col_rx:
-                                roi_x = st.number_input("X (pixels)", min_value=0, max_value=w_fm-1, value=0, step=10, key="roi_x_u")
-                            with col_ry:
-                                roi_y = st.number_input("Y (pixels)", min_value=0, max_value=h_fm-1, value=0, step=10, key="roi_y_u")
-                            with col_rw:
-                                roi_w = st.number_input("Largura", min_value=10, max_value=w_fm, value=w_fm, step=10, key="roi_w_u")
-                            with col_rh:
-                                roi_h = st.number_input("Altura", min_value=10, max_value=h_fm, value=h_fm, step=10, key="roi_h_u")
-
-                            # Aplicar ROI
-                            roi_x2 = min(roi_x + roi_w, w_fm)
-                            roi_y2 = min(roi_y + roi_h, h_fm)
-                            filme_mapa = filme_mapa[roi_y:roi_y2, roi_x:roi_x2]
-                            st.success(f"ROI aplicado: {filme_mapa.shape[1]} x {filme_mapa.shape[0]} px")
+                            filme_mapa, aplicou, info_roi = roi_visual_canvas(filme_mapa, key_prefix="unico")
+                            if aplicou:
+                                st.success(f"✅ {info_roi}")
+                            else:
+                                st.info(info_roi)
 
                         # Preview do filme (com ou sem ROI)
                         st.subheader("Filme para Análise")
@@ -1763,29 +1830,18 @@ else:
                             filme_mapa_m = filme_selecionado['imagem']
                             st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
 
-                            # ========== ROI MANUAL ==========
+                            # ========== ROI MANUAL VISUAL (CANVAS) ==========
                             st.subheader("✂️ Seleção de Região de Interesse (ROI)")
-                            st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, defina o ROI abaixo. Deixe em branco para usar o filme inteiro.")
+                            st.info("Se o filme foi cortado irregularmente ou você quer analisar apenas uma parte, ative o ROI abaixo e desenhe um retângulo sobre a imagem (clique e arraste, como no printscreen).")
 
-                            usar_roi_manual_m = st.checkbox("Usar ROI manual", value=False, key="chk_roi_m")
+                            usar_roi_manual_m = st.checkbox("Ativar ROI visual (clique e arraste na imagem)", value=False, key="chk_roi_m")
 
                             if usar_roi_manual_m:
-                                h_fm, w_fm = filme_mapa_m.shape[:2]
-                                col_rx, col_ry, col_rw, col_rh = st.columns(4)
-                                with col_rx:
-                                    roi_x_m = st.number_input("X (pixels)", min_value=0, max_value=w_fm-1, value=0, step=10, key="roi_x_m")
-                                with col_ry:
-                                    roi_y_m = st.number_input("Y (pixels)", min_value=0, max_value=h_fm-1, value=0, step=10, key="roi_y_m")
-                                with col_rw:
-                                    roi_w_m = st.number_input("Largura", min_value=10, max_value=w_fm, value=w_fm, step=10, key="roi_w_m")
-                                with col_rh:
-                                    roi_h_m = st.number_input("Altura", min_value=10, max_value=h_fm, value=h_fm, step=10, key="roi_h_m")
-
-                                # Aplicar ROI
-                                roi_x2_m = min(roi_x_m + roi_w_m, w_fm)
-                                roi_y2_m = min(roi_y_m + roi_h_m, h_fm)
-                                filme_mapa_m = filme_mapa_m[roi_y_m:roi_y2_m, roi_x_m:roi_x2_m]
-                                st.success(f"ROI aplicado: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                                filme_mapa_m, aplicou_m, info_roi_m = roi_visual_canvas(filme_mapa_m, key_prefix="multi")
+                                if aplicou_m:
+                                    st.success(f"✅ {info_roi_m}")
+                                else:
+                                    st.info(info_roi_m)
 
                             # Preview do filme
                             st.subheader("Filme para Análise")

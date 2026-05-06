@@ -926,8 +926,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v9.9.1")
-st.markdown("**Corrigido:** Isodoses sobre heatmap colorido | ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v10.0")
+st.markdown("**Novo:** Modo Vários Filmes com NOD/ADC/Ambos | Isodoses sobre heatmap | ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1322,6 +1322,7 @@ if metodologia == "Um unico filme":
                                 'adc_aumenta_com_dose': nod_info.get('adc_aumenta_com_dose', False)
                             }
                             st.session_state['curva_calibracao'] = resultado
+                            st.session_state['pv0_referencia'] = pv0
                             st.success("✅ Curva salva na sessão! Vá para 'Vários filmes' para usar esta curva.")
                             
                             # Download JSON
@@ -1646,17 +1647,44 @@ else:
             st.markdown("---")
             st.header("Tabela Completa")
             
-            df = pd.DataFrame([{
-                'Filme': f['id'], 'Arquivo': f['arquivo'],
-                'Area_cm2': round(f['area'] / (px_por_cm ** 2), 2),
-                'Largura_cm': round(f['bbox'][2] / px_por_cm, 2),
-                'Altura_cm': round(f['bbox'][3] / px_por_cm, 2),
-                'ROI_cm': round(f['roi_cm'], 2),
-                'ADC_Canal_R': round(f['intensidade_roi'], 1),
-                'ADC_Total_Canal_R': round(f['intensidade_total'], 1),
-                'Centro_X': f['centro'][0], 'Centro_Y': f['centro'][1]
-            } for f in todos_filmes])
+            # Opção para escolher o que mostrar na tabela
+            modo_exibicao = st.radio("Mostrar resultados em:", ["NOD", "ADC", "Ambos"], horizontal=True, key="modo_exibicao_multi")
             
+            # Preparar dados da tabela conforme escolha
+            dados_tabela = []
+            for f in todos_filmes:
+                linha = {
+                    'Filme': f['id'],
+                    'Arquivo': f['arquivo'],
+                    'Area_cm2': round(f['area'] / (px_por_cm ** 2), 2),
+                    'Largura_cm': round(f['bbox'][2] / px_por_cm, 2),
+                    'Altura_cm': round(f['bbox'][3] / px_por_cm, 2),
+                    'ROI_cm': round(f['roi_cm'], 2),
+                }
+                
+                if modo_exibicao in ["ADC", "Ambos"]:
+                    linha['ADC_Canal_R'] = round(f['intensidade_roi'], 1)
+                    if modo_exibicao == "Ambos":
+                        linha['ADC_Total_Canal_R'] = round(f['intensidade_total'], 1)
+                
+                if modo_exibicao in ["NOD", "Ambos"]:
+                    # Calcular NOD se tiveros PV0 de referencia
+                    if 'pv0_referencia' in st.session_state:
+                        pv0_ref = st.session_state['pv0_referencia']
+                        adc_val = f['intensidade_roi']
+                        if adc_val > 0 and pv0_ref > 0:
+                            if adc_val > pv0_ref:
+                                nod_val = np.log10(adc_val / pv0_ref)
+                            else:
+                                nod_val = np.log10(pv0_ref / adc_val)
+                            linha['NOD'] = round(nod_val, 4)
+                    # Se não tem PV0, mostrar aviso
+                    
+                linha['Centro_X'] = f['centro'][0]
+                linha['Centro_Y'] = f['centro'][1]
+                dados_tabela.append(linha)
+            
+            df = pd.DataFrame(dados_tabela)
             st.dataframe(df, use_container_width=True, hide_index=True)
             csv = df.to_csv(index=False)
             st.download_button("Download CSV Completo", csv, "filmes_resultado.csv", "text/csv")
@@ -1664,6 +1692,9 @@ else:
             # ==================== CURVA DE CALIBRACAO ====================
             st.markdown("---")
             st.header("📊 Curva de Calibração")
+            
+            # Escolher o que mostrar nos gráficos
+            graficos_mostrar = st.radio("Gráficos a exibir:", ["NOD vs Dose", "ADC vs Dose", "Ambos"], horizontal=True, key="graficos_multi")
             
             st.error("🚨 **OBRIGATORIO: Voce DEVE incluir um filme com DOSE = 0 Gy (filme NAO IRRADIADO).** Sem o filme de referencia, o NOD nao pode ser calculado corretamente.")
             st.error("🚨 **IMPORTANTE: Use apenas arquivos TIF originais do scanner (16-bit / 48-bit color).** Screenshots, JPGs ou PNGs exportados perdem a precisão e geram resultados absurdos (ADC na faixa de 0-255 em vez de 10.000-60.000).")
@@ -1884,12 +1915,19 @@ else:
                 
                 st.success("✅ Curva de calibração gerada com sucesso!")
                 
-                # Mostrar dois graficos lado a lado
-                col_graf1, col_graf2 = st.columns(2)
-                with col_graf1:
+                # Mostrar gráficos conforme escolha do usuário
+                if graficos_mostrar == "Ambos":
+                    col_graf1, col_graf2 = st.columns(2)
+                    with col_graf1:
+                        st.subheader("📈 NOD vs Dose")
+                        st.image(resultado['fig_buf_nod'], use_container_width=True)
+                    with col_graf2:
+                        st.subheader("📉 ADC vs Dose")
+                        st.image(resultado['fig_buf_adc'], use_container_width=True)
+                elif graficos_mostrar == "NOD vs Dose":
                     st.subheader("📈 NOD vs Dose")
                     st.image(resultado['fig_buf_nod'], use_container_width=True)
-                with col_graf2:
+                else:  # ADC vs Dose
                     st.subheader("📉 ADC vs Dose")
                     st.image(resultado['fig_buf_adc'], use_container_width=True)
                 
@@ -1909,6 +1947,7 @@ else:
                 
                 # Salvar curva na sessao permanente
                 st.session_state['curva_calibracao'] = resultado['curva_data']
+                st.session_state['pv0_referencia'] = resultado['curva_data']['pv0_referencia']
                 
                 # Download da curva
                 curva_json = json.dumps(resultado['curva_data'], indent=2)
@@ -1946,6 +1985,8 @@ else:
                         nome_anterior_m = st.session_state.get('upload_name_multi', None)
                         novo_upload_m = (nome_anterior_m != nome_arquivo_m)
                         
+                        filme_mapa_m = None  # Inicializar para evitar NameError
+                        
                         if novo_upload_m:
                             st.session_state['upload_name_multi'] = nome_arquivo_m
                             
@@ -1956,32 +1997,33 @@ else:
                             filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
                             
                             if not filmes_mapa:
-                                st.error("Nenhum filme detectado! Tente outra imagem.")
-                            else:
-                                st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
-                                
-                                # Selecionar qual filme mapear
-                                filme_selecionado = filmes_mapa[0]
-                                if len(filmes_mapa) > 1:
-                                    opcao_filme = st.selectbox("Selecione o filme para mapear",
-                                                               [f"Filme {i+1}" for i in range(len(filmes_mapa))])
-                                    idx_filme = int(opcao_filme.split()[-1]) - 1
-                                    filme_selecionado = filmes_mapa[idx_filme]
-                                
-                                filme_mapa_m = filme_selecionado['imagem']
-                                st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
-                                
-                                # Remover fundo branco do scanner
-                                filme_sem_fundo_m, removeu_m, _ = remover_fundo_branco(filme_mapa_m)
-                                if removeu_m:
-                                    st.success(f"✅ Fundo branco removido. Filme: {filme_sem_fundo_m.shape[1]} x {filme_sem_fundo_m.shape[0]} px")
-                                filme_mapa_m = filme_sem_fundo_m
-                                
-                                # Salvar filme processado e limpar ROI anterior (novo filme = novo ROI)
-                                st.session_state['filme_processado_multi'] = filme_mapa_m
-                                for k in ['filme_roi_multi', 'roi_aplicado_multi']:
-                                    if k in st.session_state:
-                                        del st.session_state[k]
+                                st.error("❌ Nenhum filme detectado! Tente outra imagem.")
+                                st.stop()
+                            
+                            st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
+                            
+                            # Selecionar qual filme mapear
+                            filme_selecionado = filmes_mapa[0]
+                            if len(filmes_mapa) > 1:
+                                opcao_filme = st.selectbox("Selecione o filme para mapear",
+                                                           [f"Filme {i+1}" for i in range(len(filmes_mapa))])
+                                idx_filme = int(opcao_filme.split()[-1]) - 1
+                                filme_selecionado = filmes_mapa[idx_filme]
+                            
+                            filme_mapa_m = filme_selecionado['imagem']
+                            st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                            
+                            # Remover fundo branco do scanner
+                            filme_sem_fundo_m, removeu_m, _ = remover_fundo_branco(filme_mapa_m)
+                            if removeu_m:
+                                st.success(f"✅ Fundo branco removido. Filme: {filme_sem_fundo_m.shape[1]} x {filme_sem_fundo_m.shape[0]} px")
+                            filme_mapa_m = filme_sem_fundo_m
+                            
+                            # Salvar filme processado e limpar ROI anterior (novo filme = novo ROI)
+                            st.session_state['filme_processado_multi'] = filme_mapa_m
+                            for k in ['filme_roi_multi', 'roi_aplicado_multi']:
+                                if k in st.session_state:
+                                    del st.session_state[k]
                         else:
                             # Mesmo arquivo — usar filme já processado
                             filme_mapa_m = st.session_state.get('filme_processado_multi', None)
@@ -1989,12 +2031,14 @@ else:
                                 # Fallback: reprocessar
                                 img_mapa_m, _ = carregar_imagem_preservando_bits(arq_mapa_m)
                                 filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
-                                filme_selecionado = filmes_mapa[0] if filmes_mapa else None
-                                if filme_selecionado:
-                                    filme_mapa_m = filme_selecionado['imagem']
-                                    filme_sem_fundo_m, _, _ = remover_fundo_branco(filme_mapa_m)
-                                    filme_mapa_m = filme_sem_fundo_m
-                                    st.session_state['filme_processado_multi'] = filme_mapa_m
+                                if not filmes_mapa:
+                                    st.error("❌ Nenhum filme detectado no fallback! Tente outra imagem.")
+                                    st.stop()
+                                filme_selecionado = filmes_mapa[0]
+                                filme_mapa_m = filme_selecionado['imagem']
+                                filme_sem_fundo_m, _, _ = remover_fundo_branco(filme_mapa_m)
+                                filme_mapa_m = filme_sem_fundo_m
+                                st.session_state['filme_processado_multi'] = filme_mapa_m
                         
                         if filme_mapa_m is not None:
                             st.success(f"✅ Filme pronto: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
@@ -2007,7 +2051,7 @@ else:
                             st.subheader("✂️ Seleção de Região de Interesse (ROI)")
                             st.info("Se você quer analisar apenas uma parte do filme, ative o ROI abaixo e ajuste os sliders. O retângulo vermelho mostra a área que será cortada.")
                             
-                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v97")
+                            usar_roi_manual_m = st.checkbox("Ativar ROI (ajustar área de corte)", value=False, key="chk_roi_m_v98")
                             
                             if usar_roi_manual_m:
                                 roi_aplicado_m = roi_slider_visual(filme_mapa_m, key_prefix="multi")

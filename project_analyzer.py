@@ -926,8 +926,8 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
             'min': round(float(np.min(doses_validas)) * f, 2)}
 # ==================== INTERFACE ====================
 
-st.title("🔬 Project Analyzer v10.0")
-st.markdown("**Novo:** Modo Vários Filmes com NOD/ADC/Ambos | Isodoses sobre heatmap | ROI persiste + passo 1px | Fundo branco auto-removido | Estilo isodoses | Labels opcionais | Legenda | tifffile 16-bit | Fittings Dosepy")
+st.title("🔬 Project Analyzer v10.1")
+st.markdown("**Corrigido:** Preview + Selecionar Todos | Modo Vários Filmes com NOD/ADC/Ambos | Isodoses sobre heatmap | ROI persiste | Fundo branco auto-removido | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1137,12 +1137,16 @@ if metodologia == "Um unico filme":
                 horizontal=True, key="fit_unico",
                 help="Polinomial 2o: Dose=a*NOD²+b*NOD+c | Polinomial n: Dose=a*NOD+b*NOD^n (Dosepy) | Racional: Dose=-c+b/(NOD-a) (Dosepy/cobaltCorsair) | Potencia: Dose=K1*NOD^K2")
             
-            # Modo manual de ADC
-            usar_adc_manual = st.checkbox("🔧 Usar valores de ADC manualmente (ignorar leitura do scan)", value=False,
-                                          key="adc_manual_unico",
-                                          help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada regiao.")
-            if usar_adc_manual:
-                st.info("Modo manual ativado. Digite os valores de ADC que você obteve do scanner/software de referência.")
+            # Selecionar regioes para calibração
+            st.subheader("Selecione as regioes para calibração e informe as doses")
+            
+            # Botão Selecionar Todos
+            cols_sel = st.columns([1, 1, 4])
+            with cols_sel[0]:
+                selecionar_todos_u = st.checkbox("✅ Selecionar Todos", value=False, key="sel_todos_u")
+            with cols_sel[1]:
+                if selecionar_todos_u:
+                    st.success(f"{len(reg_ord)} regioes selecionadas")
             
             filmes_calibracao = []
             
@@ -1167,27 +1171,19 @@ if metodologia == "Um unico filme":
                 else:
                     mini_arr = np.zeros((40, 80, 3), dtype=np.uint8)
                 
-                if usar_adc_manual:
-                    col_thumb, col_check, col_info, col_adc, col_dose = st.columns([1, 1, 2, 2, 2])
-                else:
-                    col_thumb, col_check, col_info, col_dose = st.columns([1, 1, 3, 2])
+                col_thumb, col_check, col_info, col_dose = st.columns([1, 1, 3, 2])
                 
                 with col_thumb:
                     st.image(mini_arr, use_container_width=True)
                 
                 with col_check:
-                    usar = st.checkbox(f"Usar", key=f"calib_u_{i}")
+                    usar = st.checkbox(f"Usar", value=selecionar_todos_u, key=f"calib_u_{i}")
                 
                 with col_info:
                     eh_filme0 = regiao.get('filme0', False)
                     label = f"**Filme {regiao['id']}**" + (" *(0 Gy upload)*" if eh_filme0 else "")
                     st.markdown(label + f" | ROI: {regiao['roi_cm']:.1f} cm")
-                    if not usar_adc_manual:
-                        st.caption(f"ADC: {regiao['intensidade_roi']:.1f}")
-                
-                if usar_adc_manual:
-                    with col_adc:
-                        adc_manual = st.number_input(f"ADC", min_value=0.0, value=float(regiao['intensidade_roi']), step=1.0, key=f"adc_manual_u_{i}")
+                    st.caption(f"ADC: {regiao['intensidade_roi']:.1f}")
                 
                 with col_dose:
                     dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_u_{i}")
@@ -1198,8 +1194,6 @@ if metodologia == "Um unico filme":
                         'dose': dose_val,
                         'id': regiao['id']
                     }
-                    if usar_adc_manual:
-                        filme_calib['filme']['intensidade_roi'] = adc_manual
                     filmes_calibracao.append(filme_calib)
             
             # Botao gerar curva
@@ -1706,30 +1700,42 @@ else:
             # Selecionar filmes para calibração
             st.subheader("Selecione os filmes de calibração e informe as doses")
             
-            # Modo manual de ADC
-            usar_adc_manual = st.checkbox("🔧 Usar valores de ADC manualmente (ignorar leitura do scan)", value=False,
-                                      help="Se os valores lidos do TIFF parecem errados, marque esta opção e digite os ADCs manualmente para cada filme.")
-            if usar_adc_manual:
-                st.info("Modo manual ativado. Digite os valores de ADC que você obteve do scanner/software de referência.")
+            # Botão Selecionar Todos
+            cols_sel = st.columns([1, 1, 4])
+            with cols_sel[0]:
+                selecionar_todos_m = st.checkbox("✅ Selecionar Todos", value=False, key="sel_todos_m")
+            with cols_sel[1]:
+                if selecionar_todos_m:
+                    st.success(f"{len(todos_filmes)} filmes selecionados")
             
             filmes_calibracao = []
             
             for i, filme in enumerate(todos_filmes):
-                if usar_adc_manual:
-                    col_check, col_info, col_adc, col_dose = st.columns([1, 2, 2, 2])
+                # Extrair miniatura do filme em RGB real
+                img_f = filme['imagem']
+                if img_f.size > 0:
+                    if len(img_f.shape) == 3:
+                        mini_rgb = img_f[:,:,:3]
+                    else:
+                        mini_rgb = np.stack([img_f]*3, axis=-1)
+                    mini_u8 = (mini_rgb.astype(np.float64) / 256.0).clip(0, 255).astype(np.uint8)
+                    thumb_h = int(80 * mini_u8.shape[0] / mini_u8.shape[1])
+                    mini_pil = Image.fromarray(mini_u8).resize((80, max(40, thumb_h)), Image.LANCZOS)
+                    mini_arr = np.array(mini_pil)
                 else:
-                    col_check, col_info, col_dose = st.columns([1, 3, 2])
-                    
+                    mini_arr = np.zeros((40, 80, 3), dtype=np.uint8)
+                
+                col_thumb, col_check, col_info, col_dose = st.columns([1, 1, 3, 2])
+                
+                with col_thumb:
+                    st.image(mini_arr, use_container_width=True)
+                
                 with col_check:
-                    usar = st.checkbox(f"Usar", key=f"calib_{i}")
+                    usar = st.checkbox(f"Usar", value=selecionar_todos_m, key=f"calib_{i}")
+                
                 with col_info:
                     st.markdown(f"**Filme {filme['id']}** | ROI: {filme['roi_cm']:.1f} cm")
-                    if not usar_adc_manual:
-                        st.caption(f"ADC auto: {filme['intensidade_roi']:.1f}")
-                
-                if usar_adc_manual:
-                    with col_adc:
-                        adc_manual = st.number_input(f"ADC", min_value=0.0, value=float(filme['intensidade_roi']), step=1.0, key=f"adc_manual_{i}")
+                    st.caption(f"ADC: {filme['intensidade_roi']:.1f}")
                 
                 with col_dose:
                     dose_val = st.number_input(f"Dose (Gy/cGy)", min_value=0.0, value=0.0, step=0.1, key=f"dose_{i}")
@@ -1740,8 +1746,6 @@ else:
                         'dose': dose_val,
                         'id': filme['id']
                     }
-                    if usar_adc_manual:
-                        filme_calib['filme']['intensidade_roi'] = adc_manual
                     filmes_calibracao.append(filme_calib)
             
             # Unidade
@@ -1993,25 +1997,26 @@ else:
                             img_mapa_m, info_mapa_m = carregar_imagem_preservando_bits(arq_mapa_m)
                             st.info(f"Imagem: {info_mapa_m['dtype']} | shape{info_mapa_m['shape']}")
                             
-                            # Detectar filme na imagem
-                            filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
+                            # Detectar filme na imagem (usar mesma abordagem do modo Único: cortar_filme_unico)
+                            filme_mapa_m = cortar_filme_unico(img_mapa_m)
                             
-                            if not filmes_mapa:
-                                st.error("❌ Nenhum filme detectado! Tente outra imagem.")
-                                st.stop()
-                            
-                            st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
-                            
-                            # Selecionar qual filme mapear
-                            filme_selecionado = filmes_mapa[0]
-                            if len(filmes_mapa) > 1:
-                                opcao_filme = st.selectbox("Selecione o filme para mapear",
-                                                           [f"Filme {i+1}" for i in range(len(filmes_mapa))])
-                                idx_filme = int(opcao_filme.split()[-1]) - 1
-                                filme_selecionado = filmes_mapa[idx_filme]
-                            
-                            filme_mapa_m = filme_selecionado['imagem']
-                            st.success(f"Filme: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
+                            if filme_mapa_m is None:
+                                # Fallback: tentar detectar múltiplos com area_min_multi
+                                filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=area_min_multi)
+                                if filmes_mapa:
+                                    st.success(f"{len(filmes_mapa)} filme(s) detectado(s)")
+                                    filme_selecionado = filmes_mapa[0]
+                                    if len(filmes_mapa) > 1:
+                                        opcao_filme = st.selectbox("Selecione o filme para mapear",
+                                                                   [f"Filme {i+1}" for i in range(len(filmes_mapa))])
+                                        idx_filme = int(opcao_filme.split()[-1]) - 1
+                                        filme_selecionado = filmes_mapa[idx_filme]
+                                    filme_mapa_m = filme_selecionado['imagem']
+                                else:
+                                    st.error("❌ Nenhum filme detectado! Tente outra imagem.")
+                                    st.stop()
+                            else:
+                                st.success(f"✅ Filme detectado: {filme_mapa_m.shape[1]} x {filme_mapa_m.shape[0]} px")
                             
                             # Remover fundo branco do scanner
                             filme_sem_fundo_m, removeu_m, _ = remover_fundo_branco(filme_mapa_m)
@@ -2030,12 +2035,14 @@ else:
                             if filme_mapa_m is None:
                                 # Fallback: reprocessar
                                 img_mapa_m, _ = carregar_imagem_preservando_bits(arq_mapa_m)
-                                filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=500)
-                                if not filmes_mapa:
-                                    st.error("❌ Nenhum filme detectado no fallback! Tente outra imagem.")
-                                    st.stop()
-                                filme_selecionado = filmes_mapa[0]
-                                filme_mapa_m = filme_selecionado['imagem']
+                                filme_mapa_m = cortar_filme_unico(img_mapa_m)
+                                if filme_mapa_m is None:
+                                    filmes_mapa, _ = detectar_filmes_multiplos(img_mapa_m, area_min=area_min_multi)
+                                    if not filmes_mapa:
+                                        st.error("❌ Nenhum filme detectado no fallback! Tente outra imagem.")
+                                        st.stop()
+                                    filme_selecionado = filmes_mapa[0]
+                                    filme_mapa_m = filme_selecionado['imagem']
                                 filme_sem_fundo_m, _, _ = remover_fundo_branco(filme_mapa_m)
                                 filme_mapa_m = filme_sem_fundo_m
                                 st.session_state['filme_processado_multi'] = filme_mapa_m

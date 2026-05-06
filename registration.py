@@ -194,12 +194,18 @@ def _normalize(arr):
 
 
 def _resample_to_common(film, tps, res_film, res_tps, target_res):
-    """Reamostra ambos para mesma resolução espacial."""
+    """Reamostra ambos para mesma resolução espacial E mesmo shape."""
     zoom_film = res_film / target_res
     zoom_tps = res_tps / target_res
 
     film_rs = zoom(film, (zoom_film, zoom_film), order=1, mode='nearest')
     tps_rs = zoom(tps, (zoom_tps, zoom_tps), order=1, mode='nearest')
+
+    # phase_cross_correlation exige mesmo shape — usar shape do TPS como referência
+    target_shape = tps_rs.shape
+    film_rs = _crop_or_pad(film_rs, target_shape)
+    # TPS pode já estar no shape certo, mas garantir
+    tps_rs = _crop_or_pad(tps_rs, target_shape)
 
     return film_rs, tps_rs
 

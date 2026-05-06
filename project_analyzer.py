@@ -2149,6 +2149,10 @@ elif metodologia == "Varios filmes":
                                     curva_dict['type'] = resultado.get('tipo_fitting', 'polynomial2')
                                     
                                     mapa_dose_m = calcular_mapa_dose(filme_para_mapa_m, pv0, curva_dict, adc_aumenta)
+                                    
+                                    # Salvar no session_state para a aba Gamma usar
+                                    st.session_state['mapa_dose_filme'] = mapa_dose_m
+                                    
                                     stats_m = estatisticas_mapa(mapa_dose_m, unidade_m)
                                     
                                     # Estatisticas
@@ -2251,20 +2255,88 @@ elif metodologia == "Analise Gamma":
     st.header("🎯 Análise Gamma — Comparação Filme vs TPS")
     st.info("Compare a distribuição de dose medida pelo filme radiocrômico com a dose calculada pelo TPS.")
 
-    # --- VERIFICAÇÃO DE PRÉ-REQUISITOS ---
-    prerequisitos_ok = True
+    # O usuário pode ter gerado o mapa de dose na aba "Vários filmes",
+    # ou pode enviar os arquivos diretamente aqui
+    usar_mapa_existente = False
+    dose_film = None
 
-    # Verificar se tem mapa de dose do filme
-    if 'mapa_dose_filme' not in st.session_state:
-        st.warning("⚠️ **Mapa de dose do filme não encontrado.**\n\nVá para a aba **'Vários filmes'**, faça a calibração e gere o mapa de dose primeiro.")
-        prerequisitos_ok = False
+    if 'mapa_dose_filme' in st.session_state:
+        usar_mapa_existente = st.checkbox("Usar mapa de dose gerado anteriormente (Vários filmes)", value=True)
+        if usar_mapa_existente:
+            dose_film = st.session_state['mapa_dose_filme']
+            st.success(f"✅ Mapa de dose do filme carregado: {dose_film.shape[1]}×{dose_film.shape[0]} pixels")
 
-    if not prerequisitos_ok:
-        st.stop()
+    # Se não tem mapa existente, permitir upload direto
+    if not usar_mapa_existente or dose_film is None:
+        st.markdown("---")
+        st.subheader("📤 Upload do Filme Irradiado para Análise Gamma")
+        st.info("Envie o filme irradiado, o filme 0 Gy e a curva de calibração para gerar o mapa de dose.")
 
-    # Recuperar mapa de dose do filme
-    dose_film = st.session_state['mapa_dose_filme']
-    st.success(f"✅ Mapa de dose do filme carregado: {dose_film.shape[1]}×{dose_film.shape[0]} pixels")
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            filme_irradiado = st.file_uploader("Filme irradiado (TIFF/PNG)", type=['tif','tiff','png','jpg','jpeg'], key="gamma_filme_irr")
+        with col_up2:
+            filme_0gy = st.file_uploader("Filme 0 Gy do mesmo lote", type=['tif','tiff','png','jpg','jpeg'], key="gamma_filme_0")
+
+        # Curva de calibração
+        curva_gamma = None
+        col_curva_file, col_curva_sess = st.columns(2)
+        with col_curva_file:
+            curva_upload = st.file_uploader("Curva de calibração (.json)", type=['json'], key="gamma_curva")
+            if curva_upload:
+                curva_gamma = json.load(curva_upload)
+        with col_curva_sess:
+            if 'curva_calibracao' in st.session_state:
+                if st.checkbox("Usar curva da sessão", value=True, key="gamma_usar_curva_sess"):
+                    curva_gamma = st.session_state['curva_calibracao']
+
+        if filme_irradiado and filme_0gy and curva_gamma:
+            with st.spinner("Gerando mapa de dose..."):
+                # Processar imagens
+                img_irr = np.array(Image.open(filme_irradiado))
+                img_0gy = np.array(Image.open(filme_0gy))
+
+                # Extrair canal vermelho e calcular NOD
+                if img_irr.ndim == 3:
+                    canal_irr = img_irr[:,:,0].astype(float)
+                else:
+                    canal_irr = img_irr.astype(float)
+
+                if img_0gy.ndim == 3:
+                    canal_0gy = img_0gy[:,:,0].astype(float)
+                else:
+                    canal_0gy = img_0gy.astype(float)
+
+                # Detectar direção do scanner
+                media_bordas_irr = np.mean([canal_irr[0,:], canal_irr[-1,:], canal_irr[:,0], canal_irr[:,-1]])
+                media_centro_irr = np.mean(canal_irr[canal_irr.shape[0]//3:2*canal_irr.shape[0]//3, canal_irr.shape[1]//3:2*canal_irr.shape[1]//3])
+                adc_aumenta = media_bordas_irr > media_centro_irr
+
+                # Calcular NOD
+                nod = np.log10(np.maximum(canal_0gy, 1) / np.maximum(canal_irr, 1))
+                if not adc_aumenta:
+                    nod = -nod
+
+                # Aplicar curva de calibração
+                tipo_curva = curva_gamma.get('tipo_fitting', 'polynomial2')
+                k1 = curva_gamma.get('K1', 0)
+                k2 = curva_gamma.get('K2', 0)
+
+                if tipo_curva == 'power':
+                    dose_film = k1 * np.maximum(nod, 0) ** k2
+                elif tipo_curva == 'rational':
+                    dose_film = (k1 + k2 * nod) / (1 + curva_gamma.get('K3', 0) * nod)
+                    dose_film = np.where(dose_film > 0, dose_film, 0)
+                else:  # polynomial2
+                    dose_film = k1 + k2 * nod + curva_gamma.get('K3', 0) * nod**2
+                    dose_film = np.where(dose_film > 0, dose_film, 0)
+
+                st.session_state['mapa_dose_filme'] = dose_film
+                st.success(f"✅ Mapa de dose gerado: {dose_film.shape[1]}×{dose_film.shape[0]} px | Máx: {dose_film.max():.2f} Gy")
+        else:
+            if not (filme_irradiado and filme_0gy and curva_gamma):
+                st.warning("⚠️ Envie todos os arquivos necessários (filme irradiado + filme 0 Gy + curva) para gerar o mapa de dose.")
+                st.stop()
 
     # --- PASSO 1: UPLOAD DO TPS ---
     st.markdown("---")

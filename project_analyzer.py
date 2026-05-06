@@ -5,9 +5,21 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import json
 import tifffile
+import tifffile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+from skimage.filters import threshold_otsu
+from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
+from skimage.measure import label, regionprops
+from skimage.segmentation import clear_border
+
+# === NOVOS MÓDULOS PARA ANÁLISE GAMMA ===
+from tps_parser import read_tps, DoseDistribution
+from gamma_engine import gamma_analysis_2d, gamma_stats_by_dose_region
+from registration import auto_register_dose_maps, apply_transform, detect_film_roi
+
 
 from skimage.filters import threshold_otsu
 from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
@@ -931,7 +943,7 @@ st.markdown("**Corrigido:** Selecionar Todos funciona + Preview + NOD/ADC/Ambos 
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
-metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes"], horizontal=True)
+metodologia = st.radio("Qual a metodologia?", ["Um unico filme", "Varios filmes", "Analise Gamma"], horizontal=True)
 st.markdown("---")
 
 with st.sidebar:
@@ -943,7 +955,7 @@ with st.sidebar:
         offset = st.slider("Sensibilidade", 0.0, 0.5, 0.15, 0.01)
         fechamento = st.slider("Fechamento", 0, 20, 5, 1)
         erosao_global = st.slider("Erosao Global", 0, 10, 0, 1)
-    else:
+    elif metodologia == "Varios filmes":
         st.subheader("Modo Varios Filmes")
         area_min_multi = st.slider("Area Minima por Filme", 100, 50000, 2000, 100)
         mostrar_recuo = st.checkbox("Mostrar recuo 5mm", value=True)
@@ -1524,7 +1536,7 @@ if metodologia == "Um unico filme":
                                     {'Isodose': '150%', col_u: round(d * 1.50, 2)},
                                 ])
                                 st.dataframe(df_iso, use_container_width=True, hide_index=True)
-else:
+elif metodologia == "Varios filmes":
     st.header("Upload dos Filmes Escaneados")
     st.info("Dica: Segure Ctrl e clique para selecionar multiplos arquivos")
     arquivos = st.file_uploader("Envie uma ou mais imagens com os filmes",
@@ -2212,7 +2224,7 @@ else:
     
     st.markdown("---")
     st.subheader("Modo de Análise")
-    metodologia = st.radio("", ["Um unico filme", "Varios filmes"], index=0)
+    metodologia = st.radio("", ["Um unico filme", "Varios filmes", "Analise Gamma"], index=0)
     
     if metodologia == "Varios filmes":
         st.subheader("Modo Varios Filmes")
@@ -2228,3 +2240,357 @@ else:
             st.info(f"R²: {st.session_state['curva_calibracao']['r2']:.4f}")
         else:
             st.warning("Nenhuma curva salva")
+    elif metodologia == "Analise Gamma":
+        st.subheader("🎯 Modo Análise Gamma")
+        st.info("Compare filme vs TPS")
+        if 'mapa_dose_filme' in st.session_state:
+            st.success("✅ Mapa de dose disponível")
+        else:
+            st.warning("⚠️ Gere o mapa de dose primeiro")
+        st.markdown("---")
+        st.subheader("Critério Gamma")
+        st.caption("3% / 3 mm (padrão)")
+
+
+# ==================== ANÁLISE GAMMA ====================
+
+elif metodologia == "Analise Gamma":
+    st.header("🎯 Análise Gamma — Comparação Filme vs TPS")
+    st.info("Compare a distribuição de dose medida pelo filme radiocrômico com a dose calculada pelo TPS.")
+
+    # --- VERIFICAÇÃO DE PRÉ-REQUISITOS ---
+    prerequisitos_ok = True
+
+    # Verificar se tem mapa de dose do filme
+    if 'mapa_dose_filme' not in st.session_state:
+        st.warning("⚠️ **Mapa de dose do filme não encontrado.**\n\nVá para a aba **'Vários filmes'**, faça a calibração e gere o mapa de dose primeiro.")
+        prerequisitos_ok = False
+
+    if not prerequisitos_ok:
+        st.stop()
+
+    # Recuperar mapa de dose do filme
+    dose_film = st.session_state['mapa_dose_filme']
+    st.success(f"✅ Mapa de dose do filme carregado: {dose_film.shape[1]}×{dose_film.shape[0]} pixels")
+
+    # --- PASSO 1: UPLOAD DO TPS ---
+    st.markdown("---")
+    st.subheader("1️⃣ Upload da Dose do TPS")
+
+    col_formato, col_upload = st.columns([1, 2])
+
+    with col_formato:
+        formato_tps = st.selectbox(
+            "Formato do arquivo TPS",
+            ["Auto-detectar", "Eclipse .ALL (Varian)", "DICOM RT Dose (.dcm)", "CSV/TXT (matriz)", "PNG/TIFF (imagem)"],
+            index=0
+        )
+
+    with col_upload:
+        arquivo_tps = st.file_uploader(
+            "Envie o arquivo de dose do TPS",
+            type=['all', 'dcm', 'csv', 'txt', 'png', 'jpg', 'jpeg', 'tif', 'tiff'],
+            key="upload_tps"
+        )
+
+    dose_tps = None
+    res_tps_mm = None
+
+    if arquivo_tps:
+        try:
+            with st.spinner("Lendo arquivo TPS..."):
+                tps_dist = read_tps(arquivo_tps.read(), filename=arquivo_tps.name)
+                dose_tps = tps_dist.dose
+                res_tps_mm = tps_dist.resolution_mm
+
+            st.success(f"✅ TPS carregado: {dose_tps.shape[1]}×{dose_tps.shape[0]} px | Resolução: {res_tps_mm:.3f} mm/px")
+            st.info(f"📊 Dose máxima TPS: {dose_tps.max():.3f} Gy | Média: {dose_tps.mean():.3f} Gy")
+
+            # Preview do TPS
+            fig_tps, ax_tps = plt.subplots(figsize=(6, 5))
+            im_tps = ax_tps.imshow(dose_tps, cmap='jet', origin='lower')
+            ax_tps.set_title("Distribuição de Dose — TPS")
+            plt.colorbar(im_tps, ax=ax_tps, fraction=0.046, label='Dose (Gy)')
+            st.pyplot(fig_tps)
+
+        except Exception as e:
+            st.error(f"❌ Erro ao ler arquivo TPS: {e}")
+            st.stop()
+
+    # --- PASSO 2: RESOLUÇÃO DO FILME (Modo Detective) ---
+    if dose_tps is not None:
+        st.markdown("---")
+        st.subheader("2️⃣ Resolução do Scan do Filme (mm/pixel)")
+
+        col_auto, col_manual = st.columns([1, 1])
+
+        with col_auto:
+            st.markdown("**🔍 Modo Detective**")
+            st.caption("O software tenta estimar automaticamente")
+
+            # Tentar metadados
+            res_film_estimada = None
+            st.info("Modo Detective: usando estimativa baseada em scanner típico")
+            res_film_estimada = 0.35  # 72 dpi padrão
+
+        with col_manual:
+            st.markdown("**📏 Modo Manual**")
+            res_film_manual = st.number_input(
+                "Resolução do filme (mm/pixel)",
+                min_value=0.01,
+                max_value=10.0,
+                value=0.35,
+                step=0.01,
+                format="%.3f",
+                help="Ex: 72 dpi = 0.35 mm/px | 150 dpi = 0.17 mm/px | 300 dpi = 0.085 mm/px"
+            )
+
+            # Converter DPI para mm/px
+            dpi_input = st.number_input("Ou informe o DPI do scanner", min_value=10, max_value=2400, value=72, step=1)
+            if dpi_input > 0:
+                res_film_manual = 25.4 / dpi_input
+                st.info(f"→ {dpi_input} dpi = {res_film_manual:.3f} mm/px")
+
+        usar_manual = st.checkbox("Usar valor manual em vez do Detective", value=False)
+        res_film_mm = res_film_manual if usar_manual else res_film_estimada
+
+        st.success(f"📐 Resolução do filme definida: **{res_film_mm:.3f} mm/pixel**")
+
+        # --- PASSO 3: REGISTRO (ALINHAMENTO) ---
+        st.markdown("---")
+        st.subheader("3️⃣ Registro Automático (Alinhamento Filme ↔ TPS)")
+
+        if st.button("🔧 Executar Registro Automático", type="primary", key="btn_registro"):
+            with st.spinner("Calculando alinhamento ótimo..."):
+                try:
+                    reg_result = auto_register_dose_maps(
+                        dose_film, dose_tps,
+                        res_film_mm, res_tps_mm,
+                        allow_rotation=True,
+                        rotation_range_deg=(-5.0, 5.0),
+                        rotation_step_deg=0.5,
+                    )
+
+                    st.session_state['registro_resultado'] = reg_result
+
+                    st.success("✅ Registro concluído!")
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    col_r1.metric("Translação X", f"{reg_result['tx_mm']:.2f} mm")
+                    col_r2.metric("Translação Y", f"{reg_result['ty_mm']:.2f} mm")
+                    col_r3.metric("Rotação", f"{reg_result['rotation_deg']:.2f}°")
+                    st.info(f"Score de correlação: {reg_result['correlation_score']:.3f}")
+
+                except Exception as e:
+                    st.error(f"❌ Erro no registro: {e}")
+                    st.info("💡 Dica: Você pode ajustar manualmente nos parâmetros abaixo.")
+
+        # Parâmetros de registro manual (fallback)
+        with st.expander("⚙️ Ajuste Manual de Registro"):
+            tx_manual = st.slider("Translação X (mm)", -50.0, 50.0, 0.0, 0.1)
+            ty_manual = st.slider("Translação Y (mm)", -50.0, 50.0, 0.0, 0.1)
+            rot_manual = st.slider("Rotação (°)", -10.0, 10.0, 0.0, 0.1)
+            scale_manual = st.slider("Escala", 0.5, 2.0, 1.0, 0.01)
+
+        # Usar resultado automático se disponível, senão manual
+        if 'registro_resultado' in st.session_state:
+            reg = st.session_state['registro_resultado']
+            tx, ty, rot, scale = reg['tx_mm'], reg['ty_mm'], reg['rotation_deg'], reg['scale']
+        else:
+            tx, ty, rot, scale = tx_manual, ty_manual, rot_manual, scale_manual
+
+        # --- PASSO 4: PARÂMETROS GAMMA ---
+        st.markdown("---")
+        st.subheader("4️⃣ Parâmetros da Análise Gamma")
+
+        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+
+        with col_p1:
+            dd_pct = st.selectbox(
+                "Dose Difference (ΔD)",
+                [1, 2, 3, 5],
+                index=2,
+                help="Percentual de diferença de dose aceitável"
+            )
+
+        with col_p2:
+            dta_mm = st.selectbox(
+                "DTA (Δd)",
+                [1, 2, 3, 5],
+                index=2,
+                help="Distância-To-Agreement em mm"
+            )
+
+        with col_p3:
+            threshold_pct = st.selectbox(
+                "Threshold (LDT)",
+                [5, 10, 20, 50],
+                index=1,
+                help="Pixels abaixo deste % do máximo são ignorados"
+            )
+
+        with col_p4:
+            global_norm = st.selectbox(
+                "Normalização",
+                ["Global", "Local"],
+                index=0,
+                help="Global = % do máximo total | Local = % do ponto local"
+            )
+
+        global_bool = (global_norm == "Global")
+
+        st.info(f"Critério: **{dd_pct}% / {dta_mm} mm** | Threshold: **{threshold_pct}%** | Normalização: **{global_norm}**")
+
+        # --- PASSO 5: CALCULAR GAMMA ---
+        if st.button("🚀 CALCULAR ANÁLISE GAMMA", type="primary", key="btn_gamma"):
+            with st.spinner("Calculando gamma index... (pode levar alguns segundos)"):
+                try:
+                    # Aplicar transformação no filme
+                    dose_film_aligned = apply_transform(
+                        dose_film, res_film_mm,
+                        tx, ty, rot, scale,
+                        target_shape=dose_tps.shape
+                    )
+
+                    # Calcular gamma
+                    gamma_result = gamma_analysis_2d(
+                        reference_dose=dose_tps,
+                        evaluation_dose=dose_film_aligned,
+                        reference_resolution_mm=res_tps_mm,
+                        evaluation_resolution_mm=res_tps_mm,  # após alinhamento, mesma resolução
+                        dose_percent_threshold=float(dd_pct),
+                        distance_mm_threshold=float(dta_mm),
+                        low_dose_percent_threshold=float(threshold_pct),
+                        global_normalization=global_bool,
+                        interp_factor=10,
+                        max_gamma=2.0,
+                        search_radius_factor=2.0,
+                    )
+
+                    # Salvar resultado
+                    st.session_state['gamma_resultado'] = gamma_result
+
+                except Exception as e:
+                    st.error(f"❌ Erro no cálculo gamma: {e}")
+                    st.stop()
+
+        # --- PASSO 6: RESULTADOS ---
+        if 'gamma_resultado' in st.session_state:
+            st.markdown("---")
+            st.header("📊 Resultados da Análise Gamma")
+
+            gamma_res = st.session_state['gamma_resultado']
+            gamma_map = gamma_res['gamma_map']
+            valid_mask = gamma_res['valid_mask']
+
+            # Cards de métricas
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Passing Rate", f"{gamma_res['passing_rate']:.2f}%", 
+                         delta="✅ PASS" if gamma_res['passing_rate'] >= 90 else "⚠️ REVIEW")
+            col_m2.metric("γ Médio", f"{gamma_res['gamma_mean']:.3f}")
+            col_m3.metric("γ Mediana", f"{gamma_res['gamma_median']:.3f}")
+            col_m4.metric("γ Máximo", f"{gamma_res['gamma_max']:.3f}")
+
+            # Mapa de Gamma
+            st.subheader("🗺️ Mapa de Gamma Index")
+            fig_g, axes_g = plt.subplots(1, 3, figsize=(18, 5))
+
+            # TPS
+            im0 = axes_g[0].imshow(dose_tps, cmap='jet', origin='lower')
+            axes_g[0].set_title(f"TPS (Referência)\nMax: {dose_tps.max():.2f} Gy")
+            plt.colorbar(im0, ax=axes_g[0], fraction=0.046)
+
+            # Filme alinhado
+            dose_film_aligned = apply_transform(dose_film, res_film_mm, tx, ty, rot, scale, target_shape=dose_tps.shape)
+            im1 = axes_g[1].imshow(dose_film_aligned, cmap='jet', origin='lower')
+            axes_g[1].set_title(f"Filme (Avaliação)\nMax: {dose_film_aligned.max():.2f} Gy")
+            plt.colorbar(im1, ax=axes_g[1], fraction=0.046)
+
+            # Gamma
+            gamma_display = np.copy(gamma_map)
+            gamma_display[~valid_mask] = np.nan
+            im2 = axes_g[2].imshow(gamma_display, cmap='RdYlGn_r', vmin=0, vmax=2, origin='lower')
+            axes_g[2].set_title(f"Gamma Index\n{dd_pct}% / {dta_mm} mm")
+            plt.colorbar(im2, ax=axes_g[2], fraction=0.046, label='γ')
+
+            plt.tight_layout()
+            st.pyplot(fig_g)
+
+            # Mapa Pass/Fail
+            st.subheader("✅/❌ Mapa Pass/Fail")
+            fig_pf, ax_pf = plt.subplots(figsize=(8, 6))
+            pass_fail = np.where(valid_mask, gamma_map <= 1.0, np.nan)
+            cmap_pf = plt.cm.colors.ListedColormap(['red', 'green'])
+            im_pf = ax_pf.imshow(pass_fail, cmap=cmap_pf, origin='lower', vmin=0, vmax=1)
+            ax_pf.set_title(f"Pass Rate: {gamma_res['passing_rate']:.2f}% | γ ≤ 1.0 = PASS (verde)")
+            st.pyplot(fig_pf)
+
+            # Histograma de Gamma
+            st.subheader("📈 Histograma de Gamma")
+            fig_hist, ax_hist = plt.subplots(figsize=(10, 4))
+            gamma_valid = gamma_map[valid_mask]
+            ax_hist.hist(gamma_valid, bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+            ax_hist.axvline(1.0, color='red', linestyle='--', linewidth=2, label='γ = 1.0 (limite)')
+            ax_hist.axvline(gamma_res['gamma_mean'], color='orange', linestyle='--', label=f"Média = {gamma_res['gamma_mean']:.3f}")
+            ax_hist.set_xlabel("Gamma Index (γ)")
+            ax_hist.set_ylabel("Frequência (pixels)")
+            ax_hist.set_title(f"Distribuição de Gamma | {dd_pct}% / {dta_mm} mm")
+            ax_hist.legend()
+            ax_hist.grid(True, alpha=0.3)
+            st.pyplot(fig_hist)
+
+            # Estatísticas por região de dose
+            st.subheader("📋 Passing Rate por Região de Dose")
+            stats_region = gamma_stats_by_dose_region(gamma_map, dose_tps)
+            if stats_region:
+                df_stats = pd.DataFrame(stats_region)
+                st.dataframe(df_stats, use_container_width=True, hide_index=True)
+
+            # Tabela resumo
+            st.subheader("📝 Resumo dos Resultados")
+            resumo = {
+                "Critério": f"{dd_pct}% / {dta_mm} mm",
+                "Normalização": global_norm,
+                "Threshold": f"{threshold_pct}%",
+                "Passing Rate": f"{gamma_res['passing_rate']:.2f}%",
+                "γ Médio": f"{gamma_res['gamma_mean']:.4f}",
+                "γ Mediana": f"{gamma_res['gamma_median']:.4f}",
+                "γ Máximo": f"{gamma_res['gamma_max']:.4f}",
+                "Pixels Avaliados": f"{gamma_res['n_evaluated']} / {gamma_res['n_total']}",
+                "Registro TX": f"{tx:.2f} mm",
+                "Registro TY": f"{ty:.2f} mm",
+                "Registro Rotação": f"{rot:.2f}°",
+            }
+            df_resumo = pd.DataFrame([resumo])
+            st.dataframe(df_resumo, use_container_width=True, hide_index=True)
+
+            # Download do relatório
+            st.subheader("⬇️ Exportar Resultados")
+
+            # Mapa de gamma como CSV
+            gamma_csv = pd.DataFrame(gamma_map).to_csv(index=False, header=False)
+            st.download_button("Download Mapa Gamma (CSV)", gamma_csv, "gamma_map.csv", "text/csv")
+
+            # Relatório JSON
+            relatorio = {
+                "parametros": {
+                    "dose_difference_pct": dd_pct,
+                    "dta_mm": dta_mm,
+                    "threshold_pct": threshold_pct,
+                    "normalizacao": global_norm,
+                },
+                "resultados": {
+                    "passing_rate": gamma_res['passing_rate'],
+                    "gamma_mean": gamma_res['gamma_mean'],
+                    "gamma_median": gamma_res['gamma_median'],
+                    "gamma_max": gamma_res['gamma_max'],
+                    "n_evaluated": gamma_res['n_evaluated'],
+                    "n_total": gamma_res['n_total'],
+                },
+                "registro": {
+                    "tx_mm": tx,
+                    "ty_mm": ty,
+                    "rotation_deg": rot,
+                    "scale": scale,
+                }
+            }
+            st.download_button("Download Relatório (JSON)", json.dumps(relatorio, indent=2), "relatorio_gamma.json", "application/json")

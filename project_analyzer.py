@@ -5,7 +5,6 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import json
 import tifffile
-import tifffile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -19,12 +18,6 @@ from skimage.segmentation import clear_border
 from tps_parser import read_tps, DoseDistribution
 from gamma_engine import gamma_analysis_2d, gamma_stats_by_dose_region
 from registration import auto_register_dose_maps, apply_transform, detect_film_roi
-
-
-from skimage.filters import threshold_otsu
-from skimage.morphology import remove_small_objects, closing, square, erosion, dilation
-from skimage.measure import label, regionprops
-from skimage.segmentation import clear_border
 
 st.set_page_config(page_title="Project Analyzer", page_icon="🔬", layout="wide")
 

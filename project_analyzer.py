@@ -2421,6 +2421,29 @@ elif metodologia == "Analise Gamma":
 
         st.success(f"📐 Resolução do filme definida: **{res_film_mm:.3f} mm/pixel**")
 
+        # --- PREVIEW DOS DOIS MAPAS (lado a lado) ---
+        st.markdown("---")
+        st.subheader("📊 Preview: Filme vs TPS")
+        
+        fig_preview, axes_preview = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Mapa de dose do filme
+        im_fp0 = axes_preview[0].imshow(dose_film, cmap='jet', origin='lower')
+        axes_preview[0].set_title(f"Filme Irradiado\\n{dose_film.shape[1]}×{dose_film.shape[0]} px | {res_film_mm:.3f} mm/px")
+        axes_preview[0].axis('off')
+        plt.colorbar(im_fp0, ax=axes_preview[0], fraction=0.046, label='Dose (Gy)')
+        
+        # Mapa de dose do TPS
+        im_fp1 = axes_preview[1].imshow(dose_tps, cmap='jet', origin='lower')
+        axes_preview[1].set_title(f"TPS (Referência)\\n{dose_tps.shape[1]}×{dose_tps.shape[0]} px | {res_tps_mm:.3f} mm/px")
+        axes_preview[1].axis('off')
+        plt.colorbar(im_fp1, ax=axes_preview[1], fraction=0.046, label='Dose (Gy)')
+        
+        plt.tight_layout()
+        st.pyplot(fig_preview)
+        
+        st.info("💡 Dica: Os mapas podem ter tamanhos diferentes. O registro automático vai alinhar o filme com o TPS.")
+
         # --- PASSO 3: REGISTRO (ALINHAMENTO) ---
         st.markdown("---")
         st.subheader("3️⃣ Registro Automático (Alinhamento Filme ↔ TPS)")

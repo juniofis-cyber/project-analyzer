@@ -927,7 +927,7 @@ def estatisticas_mapa(dose_map, unidade='Gy'):
 # ==================== INTERFACE ====================
 
 st.title("🔬 Project Analyzer v10.1")
-st.markdown("**Corrigido:** Preview + Selecionar Todos | Modo Vários Filmes com NOD/ADC/Ambos | Isodoses sobre heatmap | ROI persiste | Fundo branco auto-removido | tifffile 16-bit | Fittings Dosepy")
+st.markdown("**Corrigido:** Selecionar Todos funciona + Preview + NOD/ADC/Ambos | Modo Vários Filmes completo | Isodoses sobre heatmap | ROI persiste | Fundo branco auto-removido | tifffile 16-bit | Fittings Dosepy")
 st.info("ℹ️ O app usa apenas o **canal vermelho** e preserva o **bit-depth original** do scanner. Valores de ADC devem estar na faixa de milhares (ex: 27000-52000 para 16-bit).")
 
 tipo_filme = st.radio("Qual filme voce esta analisando?", ["EBT3", "EBT4"], horizontal=True)
@@ -1140,13 +1140,22 @@ if metodologia == "Um unico filme":
             # Selecionar regioes para calibração
             st.subheader("Selecione as regioes para calibração e informe as doses")
             
-            # Botão Selecionar Todos
+            # Botão Selecionar Todos — com sincronização via session_state
             cols_sel = st.columns([1, 1, 4])
             with cols_sel[0]:
                 selecionar_todos_u = st.checkbox("✅ Selecionar Todos", value=False, key="sel_todos_u")
             with cols_sel[1]:
                 if selecionar_todos_u:
                     st.success(f"{len(reg_ord)} regioes selecionadas")
+            
+            # Detectar mudança no "Selecionar Todos" e sincronizar todos os checkboxes
+            prev_sel_u = st.session_state.get('prev_sel_todos_u', False)
+            if selecionar_todos_u != prev_sel_u:
+                # Mudou! Atualizar todos os checkboxes individuais no session_state
+                for idx in range(len(reg_ord)):
+                    st.session_state[f"calib_u_{idx}"] = selecionar_todos_u
+                st.session_state['prev_sel_todos_u'] = selecionar_todos_u
+                st.rerun()
             
             filmes_calibracao = []
             
@@ -1177,7 +1186,8 @@ if metodologia == "Um unico filme":
                     st.image(mini_arr, use_container_width=True)
                 
                 with col_check:
-                    usar = st.checkbox(f"Usar", value=selecionar_todos_u, key=f"calib_u_{i}")
+                    # Não passar value=... — deixa o session_state controlar o estado
+                    usar = st.checkbox(f"Usar", key=f"calib_u_{i}")
                 
                 with col_info:
                     eh_filme0 = regiao.get('filme0', False)
@@ -1700,13 +1710,22 @@ else:
             # Selecionar filmes para calibração
             st.subheader("Selecione os filmes de calibração e informe as doses")
             
-            # Botão Selecionar Todos
+            # Botão Selecionar Todos — com sincronização via session_state
             cols_sel = st.columns([1, 1, 4])
             with cols_sel[0]:
                 selecionar_todos_m = st.checkbox("✅ Selecionar Todos", value=False, key="sel_todos_m")
             with cols_sel[1]:
                 if selecionar_todos_m:
                     st.success(f"{len(todos_filmes)} filmes selecionados")
+            
+            # Detectar mudança no "Selecionar Todos" e sincronizar todos os checkboxes
+            prev_sel_m = st.session_state.get('prev_sel_todos_m', False)
+            if selecionar_todos_m != prev_sel_m:
+                # Mudou! Atualizar todos os checkboxes individuais no session_state
+                for idx in range(len(todos_filmes)):
+                    st.session_state[f"calib_{idx}"] = selecionar_todos_m
+                st.session_state['prev_sel_todos_m'] = selecionar_todos_m
+                st.rerun()
             
             filmes_calibracao = []
             
@@ -1731,7 +1750,8 @@ else:
                     st.image(mini_arr, use_container_width=True)
                 
                 with col_check:
-                    usar = st.checkbox(f"Usar", value=selecionar_todos_m, key=f"calib_{i}")
+                    # Não passar value=... — deixa o session_state controlar o estado
+                    usar = st.checkbox(f"Usar", key=f"calib_{i}")
                 
                 with col_info:
                     st.markdown(f"**Filme {filme['id']}** | ROI: {filme['roi_cm']:.1f} cm")

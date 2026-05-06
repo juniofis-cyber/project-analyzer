@@ -2237,16 +2237,6 @@ elif metodologia == "Varios filmes":
             st.info(f"R²: {st.session_state['curva_calibracao']['r2']:.4f}")
         else:
             st.warning("Nenhuma curva salva")
-    elif metodologia == "Analise Gamma":
-        st.subheader("🎯 Modo Análise Gamma")
-        st.info("Compare filme vs TPS")
-        if 'mapa_dose_filme' in st.session_state:
-            st.success("✅ Mapa de dose disponível")
-        else:
-            st.warning("⚠️ Gere o mapa de dose primeiro")
-        st.markdown("---")
-        st.subheader("Critério Gamma")
-        st.caption("3% / 3 mm (padrão)")
 
 
 # ==================== ANÁLISE GAMMA ====================

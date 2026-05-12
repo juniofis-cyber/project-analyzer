@@ -1,0 +1,10 @@
+fpdf2>=2.7.0
+streamlit>=1.28.0
+numpy>=1.26.0
+pandas>=2.0.0
+Pillow>=10.0.0
+scikit-image>=0.22.0
+scipy>=1.11.0
+matplotlib>=3.7.0
+tifffile>=2023.0.0
+streamlit-image-coordinates>=0.3.0

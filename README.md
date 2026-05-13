@@ -1,6 +1,6 @@
-# 🔬 Project Analyzer v2.0
+# Chromis
 
-Analisador de Filme Radiocrômico EBT3 baseado em técnicas do **Dosepy** (Luis Olivares) e **OMG Dosimetry** (Jean-Francois Cabana).
+Analisador de Filme Radiocrômico EBT3/EBT4
 
 ## 🚀 Deploy no Streamlit Cloud
 
